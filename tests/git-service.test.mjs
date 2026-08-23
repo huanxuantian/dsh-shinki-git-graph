@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createGitService, GitCommandError, E_BAD_REQUEST } from '../lib/git-service.js';
+import { createGitService, GitCommandError, E_BAD_REQUEST, E_GIT_MISSING } from '../lib/git-service.js';
 
 let dir;
 let cwd;
@@ -135,6 +135,22 @@ test('非仓库目录：init 返回 isRepo=false', async () => {
     const r = await service.init(plain);
     assert.equal(r.isRepo, false);
   } finally { rmSync(plain, { recursive: true, force: true }); }
+});
+
+test('git 缺失：init 抛 E_GIT_MISSING 而非 isRepo=false', async () => {
+  // 模拟 git 不可用：临时把 PATH 清掉（只留不存在的目录），spawn('git') 应 127。
+  const plain = mkdtempSync(path.join(tmpdir(), 'shinki-nogit-'));
+  const origPath = process.env.PATH;
+  try {
+    process.env.PATH = 'Z:\\definitely\\missing';
+    await assert.rejects(
+      service.init(plain),
+      (e) => e instanceof GitCommandError && e.code === E_GIT_MISSING
+    );
+  } finally {
+    process.env.PATH = origPath;
+    rmSync(plain, { recursive: true, force: true });
+  }
 });
 
 test('status：未提交变更入列', async () => {
@@ -335,6 +351,17 @@ test('pull --rebase：变基拉取', async () => {
     const log = await service.graph(cwd, { limit: 20 });
     assert.ok(log.rows.some((r) => r.subject === 'rebase target'), '--rebase 拉取后应看到远端提交');
   } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+test('runGit onPrompt：凭据提示回调链路（无提示时不触发）', async () => {
+  // 对本地裸仓库 push 不会发认证提示；验证 onPrompt 存在时流程仍正常完成。
+  let prompted = 0;
+  const { ok, info } = await service.push(cwd, { remote: 'origin', branch: 'main' }, {
+    onPrompt: async () => { prompted += 1; return 'ignored'; },
+  });
+  assert.equal(ok, true);
+  assert.equal(prompted, 0, '本地仓库 push 不应触发凭据提示');
+  assert.ok(info === null || typeof info === 'object');
 });
 
 test('pull fetchOnly：只拉取不合并/不检出', async () => {

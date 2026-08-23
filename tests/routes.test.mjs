@@ -162,6 +162,20 @@ test('fetchAll 全链路', async () => {
   assert.equal(body.ok, true);
 });
 
+test('prompt-poll：未知 opId 返回 prompt=null', async () => {
+  const { status, body } = await call('prompt-poll', { opId: 'nope' });
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.value.prompt, null);
+});
+
+test('prompt-answer：未知 opId 返回 404', async () => {
+  const { status, body } = await call('prompt-answer', { opId: 'nope', value: 'x' });
+  assert.equal(status, 404);
+  assert.equal(body.ok, false);
+  assert.equal(body.error.code, 'prompt-not-found');
+});
+
 test('checkout 全链路', async () => {
   const { status, body } = await call('checkout', { branch: 'main' });
   assert.equal(status, 200);
