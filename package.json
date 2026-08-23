@@ -1,0 +1,33 @@
+{
+  "name": "dsh-shinki-git-graph",
+  "version": "0.1.0",
+  "description": "DSH 侧边栏 Git 图谱插件：分支树 + 泳道提交图 + 点击展开提交详情（只读历史视图）。默认显示当前分支与其上游远程分支，可选显示全部本地/远程分支。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  }
+}
