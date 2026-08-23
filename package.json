@@ -26,8 +26,19 @@
     "cordis.patch.yml",
     "README.md"
   ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "git",
+    "git-graph",
+    "sidebar",
+    "visualization"
+  ],
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/"
   }
 }
