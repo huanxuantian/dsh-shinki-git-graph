@@ -468,3 +468,54 @@ test('checkout/createBranch：不存在的远程分支被拒', async () => {
     (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
   );
 });
+
+test('checkout 本地分支：未跟踪且默认远程有同名 → 自动设置上游', async () => {
+  // 本地建 auto-track 并推送（不带 -u，保持未跟踪），再切回 main。
+  git(['checkout', '-b', 'auto-track']);
+  git(['push', 'origin', 'auto-track']);
+  const before = gitOrFail(['rev-parse', '--abbrev-ref', 'auto-track@{upstream}']);
+  assert.notEqual(before.status, 0, '前置：auto-track 应未跟踪');
+  git(['checkout', 'main']);
+  // 检出 auto-track（真正切换，非当前分支）：应按默认远程（origin）自动设置上游。
+  await service.checkout(cwd, { branch: 'auto-track' });
+  const upstream = git(['rev-parse', '--abbrev-ref', 'auto-track@{upstream}']).trim();
+  assert.equal(upstream, 'origin/auto-track', '未跟踪分支检出应自动关联默认远程同名分支');
+  await service.checkout(cwd, { branch: 'main' });
+});
+
+test('checkout 当前分支：默认不自动补齐上游；linkCurrent 时补齐', async () => {
+  // 准备一个未跟踪分支 sit-here（推送但不带 -u），并停留在它上面。
+  git(['checkout', '-b', 'sit-here']);
+  git(['push', 'origin', 'sit-here']);
+  // 默认（linkCurrent 缺省 = false）：检出当前分支 → 不补绑。
+  const r1 = await service.checkout(cwd, { branch: 'sit-here' });
+  assert.equal(r1.unchanged, true);
+  let up = gitOrFail(['rev-parse', '--abbrev-ref', 'sit-here@{upstream}']);
+  assert.notEqual(up.status, 0, '默认应不自动补齐（检出当前分支）');
+  // linkCurrent=true：本次检出当前分支 → 按默认策略补绑。
+  const r2 = await service.checkout(cwd, { branch: 'sit-here', linkCurrent: true });
+  assert.equal(r2.unchanged, true);
+  up = git(['rev-parse', '--abbrev-ref', 'sit-here@{upstream}']).trim();
+  assert.equal(up, 'origin/sit-here', 'linkCurrent 时检出当前分支应补齐上游');
+  await service.checkout(cwd, { branch: 'main' });
+});
+
+test('checkout 本地分支：未跟踪且默认远程无同名 → 保持未跟踪', async () => {
+  git(['checkout', '-b', 'no-remote-twin']);
+  git(['checkout', 'main']);
+  await service.checkout(cwd, { branch: 'no-remote-twin' });
+  const upstream = gitOrFail(['rev-parse', '--abbrev-ref', 'no-remote-twin@{upstream}']);
+  assert.notEqual(upstream.status, 0, '远程无同名分支时不应设置上游');
+  await service.checkout(cwd, { branch: 'main' });
+});
+
+test('checkout 远程分支：本地同名未跟踪 → 切换并设置上游', async () => {
+  // 本地 twin 未跟踪（推送不带 -u），检出 origin/twin 时应补设上游。
+  git(['checkout', '-b', 'twin']);
+  git(['push', 'origin', 'twin']);
+  git(['checkout', 'main']);
+  await service.checkout(cwd, { branch: 'origin/twin' });
+  const upstream = git(['rev-parse', '--abbrev-ref', 'twin@{upstream}']).trim();
+  assert.equal(upstream, 'origin/twin', '检出远程分支且本地同名未跟踪时应设置上游');
+  await service.checkout(cwd, { branch: 'main' });
+});
