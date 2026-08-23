@@ -26,7 +26,10 @@ before(async () => {
   writeFileSync(path.join(dir, 'a.txt'), 'v1\n');
   git(['add', '.']);
   git(['commit', '-m', 'c1']);
-  originDir = path.join(dir, 'origin.git');
+  // Bare remote for sync tests — MUST live outside the work tree (an
+  // in-tree origin.git would be swept into `git add .` and reported dirty).
+  originDir = path.join(tmpdir(), `shinki-routes-origin-${path.basename(dir)}.git`);
+  rmSync(originDir, { recursive: true, force: true });
   git(['init', '--bare', originDir]);
   git(['--git-dir', originDir, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
   git(['remote', 'add', 'origin', originDir]);
@@ -45,6 +48,7 @@ before(async () => {
 after(() => {
   try { server.close(); } catch { /* ignore */ }
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { rmSync(originDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 async function call(method, payload) {

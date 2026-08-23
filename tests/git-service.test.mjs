@@ -9,7 +9,7 @@ import { createGitService, GitCommandError, E_BAD_REQUEST } from '../lib/git-ser
 let dir;
 let cwd;
 let service;
-let originDir; // bare remote for push/pull/fetch tests
+let originDir; // bare remote for push/pull/fetch tests (OUTSIDE the work tree!)
 const ctx = { logger: { warn() {} } };
 
 function git(args, opts = {}) {
@@ -45,8 +45,11 @@ before(() => {
   git(['add', '.']);
   git(['commit', '-m', 'c3']);
   git(['merge', '--no-ff', 'feature', '-m', 'merge feature']);
-  // Bare remote for sync tests.
-  originDir = path.join(dir, 'origin.git');
+  // Bare remote for sync tests. MUST live outside the work tree — a bare
+  // repo inside `dir` would be swept into `git add .`/stage-all and then
+  // reported as dirty tracked changes on checkout.
+  originDir = path.join(tmpdir(), `shinki-origin-${path.basename(dir)}.git`);
+  rmSync(originDir, { recursive: true, force: true });
   git(['init', '--bare', originDir]);
   git(['--git-dir', originDir, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
   git(['remote', 'add', 'origin', originDir]);
@@ -54,7 +57,10 @@ before(() => {
   service = createGitService(ctx);
 });
 
-after(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
+after(() => {
+  try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { rmSync(originDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 test('init：识别仓库与当前分支', async () => {
   const r = await service.init(cwd);
@@ -285,6 +291,50 @@ test('push：非法远程/分支被拒', async () => {
     service.push(cwd, { remote: 'origin', branch: '-u' }),
     (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
   );
+});
+
+test('push -u：设置上游跟踪', async () => {
+  // 本地建 up-track 分支，push -u 后应自动配置 origin/up-track 为上游。
+  git(['checkout', '-b', 'up-track']);
+  const before = gitOrFail(['rev-parse', '--abbrev-ref', 'up-track@{upstream}']);
+  assert.notEqual(before.status, 0, '前置：up-track 应未跟踪');
+  const { ok } = await service.push(cwd, { remote: 'origin', branch: 'up-track', setUpstream: true });
+  assert.equal(ok, true);
+  const upstream = git(['rev-parse', '--abbrev-ref', 'up-track@{upstream}']).trim();
+  assert.equal(upstream, 'origin/up-track', 'push -u 应设置上游');
+  git(['checkout', 'main']);
+});
+
+test('push ahead/behind 提示：领先/落后计数', async () => {
+  // up-track 已推送且跟踪 origin/up-track；本地再提交一次 → ahead=1。
+  git(['checkout', 'up-track']);
+  writeFileSync(path.join(dir, 'ab.txt'), 'ab\n', { flag: 'a' });
+  git(['add', '.']);
+  git(['commit', '-m', 'ahead one']);
+  const { info } = await service.push(cwd, { remote: 'origin', branch: 'up-track' });
+  assert.ok(info, '有上游时应返回 ahead/behind 信息');
+  assert.equal(info.ahead, 1, '本地领先 1 个提交');
+  assert.equal(info.behind, 0);
+  git(['checkout', 'main']);
+});
+
+test('pull --rebase：变基拉取', async () => {
+  const clone = mkdtempSync(path.join(tmpdir(), 'shinki-clone-rebase-'));
+  try {
+    git(['clone', originDir, clone], { cwd: tmpdir() });
+    const c2 = { cwd: clone };
+    git(['config', 'user.email', 't6@example.com'], c2);
+    git(['config', 'user.name', 'Tester6'], c2);
+    writeFileSync(path.join(clone, 'rb.txt'), 'rb\n');
+    git(['add', '.'], c2);
+    git(['commit', '-m', 'rebase target'], c2);
+    git(['push', 'origin', 'main'], c2);
+
+    const { ok } = await service.pull(cwd, { remote: 'origin', branch: 'main', rebase: true });
+    assert.equal(ok, true);
+    const log = await service.graph(cwd, { limit: 20 });
+    assert.ok(log.rows.some((r) => r.subject === 'rebase target'), '--rebase 拉取后应看到远端提交');
+  } finally { rmSync(clone, { recursive: true, force: true }); }
 });
 
 test('pull fetchOnly：只拉取不合并/不检出', async () => {
