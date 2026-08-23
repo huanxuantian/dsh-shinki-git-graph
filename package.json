@@ -1,6 +1,6 @@
 {
   "name": "dsh-shinki-git-graph",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "DSH 侧边栏 Git 图谱插件：分支树 + 泳道提交图 + 点击展开提交详情（只读历史视图）。默认显示当前分支与其上游远程分支，可选显示全部本地/远程分支。",
   "type": "module",
   "main": "lib/index.js",
