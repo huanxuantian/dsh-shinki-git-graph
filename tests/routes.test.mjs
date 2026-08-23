@@ -10,9 +10,10 @@ import { createHandler } from '../lib/routes.js';
 let dir;
 let server;
 let port;
+let originDir;
 
-function git(args) {
-  const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+function git(args, opts = {}) {
+  const r = spawnSync('git', args, { cwd: opts.cwd ?? dir, encoding: 'utf8' });
   assert.equal(r.status, 0, `git ${args.join(' ')} 失败: ${r.stderr}`);
   return r.stdout;
 }
@@ -25,6 +26,10 @@ before(async () => {
   writeFileSync(path.join(dir, 'a.txt'), 'v1\n');
   git(['add', '.']);
   git(['commit', '-m', 'c1']);
+  originDir = path.join(dir, 'origin.git');
+  git(['init', '--bare', originDir]);
+  git(['--git-dir', originDir, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+  git(['remote', 'add', 'origin', originDir]);
 
   const ctx = {
     sessions: { get: (id) => (id === 's1' ? { header: { cwd: dir } } : undefined) },
@@ -95,4 +100,60 @@ test('缺少 method/sessionId → 400', async () => {
 test('未知方法 → 404', async () => {
   const { status } = await call('hack');
   assert.equal(status, 404);
+});
+
+test('remotes 全链路', async () => {
+  const { status, body } = await call('remotes');
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  assert.ok(body.value.remotes.some((r) => r.name === 'origin'));
+});
+
+test('tags 全链路', async () => {
+  git(['tag', 'r1']);
+  const { status, body } = await call('tags');
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  assert.ok(body.value.tags.some((t) => t.name === 'r1'));
+});
+
+test('push tag 全链路', async () => {
+  const { status, body } = await call('push', { remote: 'origin', tag: 'r1' });
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  const remoteTag = git(['--git-dir', originDir, 'rev-parse', 'refs/tags/r1']).trim();
+  assert.equal(remoteTag, git(['rev-parse', 'refs/tags/r1']).trim());
+});
+
+test('pull tag 全链路（仅 fetch）', async () => {
+  const { status, body } = await call('pull', { remote: 'origin', tag: 'r1' });
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+});
+
+test('push 全链路（推送到裸远程）', async () => {
+  const { status, body } = await call('push', { remote: 'origin', branch: 'main' });
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  const remoteHead = git(['--git-dir', originDir, 'rev-parse', 'main']).trim();
+  assert.equal(remoteHead, git(['rev-parse', 'HEAD']).trim());
+});
+
+test('push 非法远程 → 400', async () => {
+  const { status, body } = await call('push', { remote: 'nope', branch: 'main' });
+  assert.equal(status, 400);
+  assert.equal(body.ok, false);
+  assert.equal(body.error.code, 'bad-request');
+});
+
+test('pull fetchOnly 全链路', async () => {
+  const { status, body } = await call('pull', { remote: 'origin', branch: 'main', fetchOnly: true });
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+});
+
+test('fetchAll 全链路', async () => {
+  const { status, body } = await call('fetchAll');
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
 });

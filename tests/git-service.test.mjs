@@ -9,12 +9,16 @@ import { createGitService, GitCommandError, E_BAD_REQUEST } from '../lib/git-ser
 let dir;
 let cwd;
 let service;
+let originDir; // bare remote for push/pull/fetch tests
 const ctx = { logger: { warn() {} } };
 
 function git(args, opts = {}) {
   const r = spawnSync('git', args, { cwd: opts.cwd ?? dir, encoding: 'utf8' });
   assert.equal(r.status, 0, `git ${args.join(' ')} 失败: ${r.stderr}`);
   return r.stdout;
+}
+function gitOrFail(args, opts = {}) {
+  return spawnSync('git', args, { cwd: opts.cwd ?? dir, encoding: 'utf8' });
 }
 function commit(msg, opts = {}) {
   const file = opts.file ?? 'a.txt';
@@ -41,6 +45,11 @@ before(() => {
   git(['add', '.']);
   git(['commit', '-m', 'c3']);
   git(['merge', '--no-ff', 'feature', '-m', 'merge feature']);
+  // Bare remote for sync tests.
+  originDir = path.join(dir, 'origin.git');
+  git(['init', '--bare', originDir]);
+  git(['--git-dir', originDir, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+  git(['remote', 'add', 'origin', originDir]);
   cwd = dir;
   service = createGitService(ctx);
 });
@@ -178,4 +187,163 @@ test('discard 未跟踪文件 = 删除文件', async () => {
 
 test('空提交消息被拒', async () => {
   await assert.rejects(service.commitWithMessage(cwd, '   '), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST);
+});
+
+test('remotes：列出配置的远程', async () => {
+  const { remotes: rs } = await service.remotes(cwd);
+  assert.ok(rs.some((r) => r.name === 'origin' && r.url === originDir));
+});
+
+test('push：推送到远程裸仓库', async () => {
+  const { ok } = await service.push(cwd, { remote: 'origin', branch: 'main' });
+  assert.equal(ok, true);
+  const remoteHead = git(['--git-dir', originDir, 'rev-parse', 'main']).trim();
+  const localHead = git(['rev-parse', 'HEAD']).trim();
+  assert.equal(remoteHead, localHead);
+});
+
+test('tags：列出本地标签', async () => {
+  git(['tag', 'v1.0.0']);
+  git(['tag', '-a', 'v2.0.0', '-m', 'annotated']);
+  const { tags: ts } = await service.tags(cwd);
+  const names = ts.map((t) => t.name);
+  assert.ok(names.includes('v1.0.0'));
+  assert.ok(names.includes('v2.0.0'));
+  for (const tg of ts) assert.ok(/^[0-9a-f]{40}$/.test(tg.oid), `tag ${tg.name} 应有完整 oid`);
+});
+
+test('push tag：推送到远程裸仓库', async () => {
+  const { ok } = await service.push(cwd, { remote: 'origin', tag: 'v1.0.0' });
+  assert.equal(ok, true);
+  const remoteTag = git(['--git-dir', originDir, 'rev-parse', 'refs/tags/v1.0.0']).trim();
+  const localTag = git(['rev-parse', 'refs/tags/v1.0.0']).trim();
+  assert.equal(remoteTag, localTag);
+});
+
+test('push：branch 与 tag 不能同时指定', async () => {
+  await assert.rejects(
+    service.push(cwd, { remote: 'origin', branch: 'main', tag: 'v1.0.0' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+  await assert.rejects(
+    service.push(cwd, { remote: 'origin' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+});
+
+test('push tag：不存在的本地标签被拒', async () => {
+  await assert.rejects(
+    service.push(cwd, { remote: 'origin', tag: 'nope-tag' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+  await assert.rejects(
+    service.push(cwd, { remote: 'origin', tag: '../escape' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+});
+
+test('pull tag：只拉取指定标签（不合并/不检出）', async () => {
+  const clone = mkdtempSync(path.join(tmpdir(), 'shinki-clone-tag-'));
+  try {
+    git(['clone', originDir, clone], { cwd: tmpdir() });
+    const c2 = { cwd: clone };
+    git(['config', 'user.email', 't5@example.com'], c2);
+    git(['config', 'user.name', 'Tester5'], c2);
+    git(['tag', 'v3.0.0'], c2);
+    git(['push', 'origin', 'tag', 'v3.0.0'], c2);
+    const tagOid = git(['rev-parse', 'refs/tags/v3.0.0'], c2).trim();
+
+    const before = git(['rev-parse', 'HEAD']).trim();
+    const { ok } = await service.pull(cwd, { remote: 'origin', tag: 'v3.0.0' });
+    assert.equal(ok, true);
+    assert.equal(git(['rev-parse', 'refs/tags/v3.0.0']).trim(), tagOid, 'tag 应已拉取到本地');
+    assert.equal(git(['rev-parse', 'HEAD']).trim(), before, 'tag 拉取不应移动 HEAD');
+  } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+test('pull：branch 与 tag 不能同时指定；非法 tag 被拒', async () => {
+  await assert.rejects(
+    service.pull(cwd, { remote: 'origin', branch: 'main', tag: 'v1.0.0' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+  await assert.rejects(
+    service.pull(cwd, { remote: 'origin', tag: 'a..b' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+});
+
+test('push：非法远程/分支被拒', async () => {
+  await assert.rejects(
+    service.push(cwd, { remote: 'nope', branch: 'main' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+  await assert.rejects(
+    service.push(cwd, { remote: 'origin', branch: '../escape' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+  await assert.rejects(
+    service.push(cwd, { remote: 'origin', branch: '-u' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+});
+
+test('pull fetchOnly：只拉取不合并/不检出', async () => {
+  // A second clone pushes a new commit to the bare remote.
+  const clone = mkdtempSync(path.join(tmpdir(), 'shinki-clone-'));
+  try {
+    git(['clone', originDir, clone], { cwd: tmpdir() });
+    const c2 = { cwd: clone };
+    git(['config', 'user.email', 't2@example.com'], c2);
+    git(['config', 'user.name', 'Tester2'], c2);
+    writeFileSync(path.join(clone, 'remote.txt'), 'remote work\n');
+    git(['add', '.'], c2);
+    git(['commit', '-m', 'remote commit'], c2);
+    git(['push', 'origin', 'main'], c2);
+    const pushed = git(['rev-parse', 'HEAD'], c2).trim();
+
+    const before = git(['rev-parse', 'HEAD']).trim();
+    const { ok } = await service.pull(cwd, { remote: 'origin', branch: 'main', fetchOnly: true });
+    assert.equal(ok, true);
+    const after = git(['rev-parse', 'HEAD']).trim();
+    assert.equal(after, before, 'fetchOnly 不应移动 HEAD（不合并/不检出）');
+    assert.equal(git(['rev-parse', 'FETCH_HEAD']).trim(), pushed, 'FETCH_HEAD 应指向远端新提交');
+  } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+test('pull：fetch+merge 合入远端提交', async () => {
+  const clone = mkdtempSync(path.join(tmpdir(), 'shinki-clone2-'));
+  try {
+    git(['clone', originDir, clone], { cwd: tmpdir() });
+    const c2 = { cwd: clone };
+    git(['config', 'user.email', 't3@example.com'], c2);
+    git(['config', 'user.name', 'Tester3'], c2);
+    writeFileSync(path.join(clone, 'm.txt'), 'm\n');
+    git(['add', '.'], c2);
+    git(['commit', '-m', 'merge target'], c2);
+    git(['push', 'origin', 'main'], c2);
+
+    const { ok } = await service.pull(cwd, { remote: 'origin', branch: 'main' });
+    assert.equal(ok, true);
+    const log = await service.graph(cwd, { limit: 20 });
+    assert.ok(log.rows.some((r) => r.subject === 'merge target'), 'pull 后应能看到远端提交');
+  } finally { rmSync(clone, { recursive: true, force: true }); }
+});
+
+test('fetchAll：拉取全部远程', async () => {
+  const clone = mkdtempSync(path.join(tmpdir(), 'shinki-clone3-'));
+  try {
+    git(['clone', originDir, clone], { cwd: tmpdir() });
+    const c2 = { cwd: clone };
+    git(['config', 'user.email', 't4@example.com'], c2);
+    git(['config', 'user.name', 'Tester4'], c2);
+    writeFileSync(path.join(clone, 'fa.txt'), 'fa\n');
+    git(['add', '.'], c2);
+    git(['commit', '-m', 'fetch all target'], c2);
+    git(['push', 'origin', 'main'], c2);
+    const pushed = git(['rev-parse', 'HEAD'], c2).trim();
+
+    const { ok } = await service.fetchAll(cwd);
+    assert.equal(ok, true);
+    assert.equal(git(['rev-parse', 'FETCH_HEAD']).trim(), pushed);
+  } finally { rmSync(clone, { recursive: true, force: true }); }
 });
