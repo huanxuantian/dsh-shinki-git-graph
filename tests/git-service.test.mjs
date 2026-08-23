@@ -120,3 +120,53 @@ test('非仓库目录：init 返回 isRepo=false', async () => {
     assert.equal(r.isRepo, false);
   } finally { rmSync(plain, { recursive: true, force: true }); }
 });
+
+test('status：未提交变更入列', async () => {
+  writeFileSync(path.join(dir, 'a.txt'), 'changed\n', { flag: 'a' });
+  const r = await service.status(cwd);
+  const a = r.entries.find((e) => e.path === 'a.txt');
+  assert.ok(a, 'a.txt 应在 status 中');
+  assert.equal(a.xy, ' M'); // 未暂存修改
+});
+
+test('stage → unstage → commit 全链路', async () => {
+  writeFileSync(path.join(dir, 'staged.txt'), 's1\n');
+  await service.stage(cwd, 'staged.txt');
+  let r = await service.status(cwd);
+  assert.equal(r.entries.find((e) => e.path === 'staged.txt').xy, 'A ');
+  await service.unstage(cwd, 'staged.txt');
+  r = await service.status(cwd);
+  assert.equal(r.entries.find((e) => e.path === 'staged.txt').xy, '??');
+  await service.stage(cwd, 'staged.txt');
+  await service.commitWithMessage(cwd, 'test commit staged');
+  const log = await service.graph(cwd, { limit: 1 });
+  assert.match(log.rows[0].subject, /test commit staged/);
+});
+
+test('stage 全部（无 path）', async () => {
+  writeFileSync(path.join(dir, 'all.txt'), 'x\n');
+  await service.stage(cwd);
+  const r = await service.status(cwd);
+  assert.equal(r.entries.find((e) => e.path === 'all.txt').xy, 'A ');
+  await service.commitWithMessage(cwd, 'stage all');
+});
+
+test('discard：恢复工作区文件', async () => {
+  writeFileSync(path.join(dir, 'disc.txt'), 'keep\n');
+  await service.stage(cwd, 'disc.txt');
+  await service.commitWithMessage(cwd, 'disc base');
+  writeFileSync(path.join(dir, 'disc.txt'), 'keep\nchanged\n');
+  await service.discard(cwd, 'disc.txt');
+  const content = git(['show', 'HEAD:disc.txt']).trim();
+  assert.equal(content, 'keep');
+});
+
+test('非法路径被拒（stage/discard/diff）', async () => {
+  await assert.rejects(service.stage(cwd, '../escape'), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST);
+  await assert.rejects(service.discard(cwd, 'a\\b'), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST);
+  await assert.rejects(service.diff(cwd, '..', false), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST);
+});
+
+test('空提交消息被拒', async () => {
+  await assert.rejects(service.commitWithMessage(cwd, '   '), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST);
+});
