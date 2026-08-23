@@ -104,6 +104,7 @@ test('commit：元信息 + stat + diff', async () => {
   assert.ok(r.author.name === 'Tester');
   assert.ok(Array.isArray(r.stat));
   assert.ok(typeof r.diffText === 'string');
+  assert.ok(r.diffText.includes('diff --git'), 'diffText 应包含补丁（--numstat 抑制补丁的回归防护）');
 });
 
 test('commit：非法 hash 被拒', async () => {
