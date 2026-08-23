@@ -347,3 +347,124 @@ test('fetchAll：拉取全部远程', async () => {
     assert.equal(git(['rev-parse', 'FETCH_HEAD']).trim(), pushed);
   } finally { rmSync(clone, { recursive: true, force: true }); }
 });
+
+test('checkout：切换到已存在本地分支', async () => {
+  const { ok, unchanged } = await service.checkout(cwd, { branch: 'feature' });
+  assert.equal(ok, true);
+  assert.notEqual(unchanged, true);
+  assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD']).trim(), 'feature');
+  // 切回 main，避免影响后续用例的当前分支假设。
+  await service.checkout(cwd, { branch: 'main' });
+  assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD']).trim(), 'main');
+});
+
+test('checkout：当前分支不变更、不存在分支/非法名被拒', async () => {
+  const r = await service.checkout(cwd, { branch: 'main' });
+  assert.equal(r.unchanged, true);
+  await assert.rejects(
+    service.checkout(cwd, { branch: 'nope' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+  await assert.rejects(
+    service.checkout(cwd, { branch: '../escape' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+});
+
+test('createBranch：新建并切到新分支（默认基于 HEAD）', async () => {
+  const { ok } = await service.createBranch(cwd, { name: 'new-feature' });
+  assert.equal(ok, true);
+  assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD']).trim(), 'new-feature');
+  await service.checkout(cwd, { branch: 'main' });
+});
+
+test('createBranch：基于指定分支；重名/非法名被拒', async () => {
+  await service.createBranch(cwd, { name: 'from-feature', base: 'feature' });
+  assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD']).trim(), 'from-feature');
+  // 先创建 dup，再创建同名 → 拒绝。
+  await service.createBranch(cwd, { name: 'dup' });
+  await assert.rejects(
+    service.createBranch(cwd, { name: 'dup' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+  await assert.rejects(
+    service.createBranch(cwd, { name: 'bad..name' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+  await assert.rejects(
+    service.createBranch(cwd, { name: 'x', base: 'missing-base' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+  await service.checkout(cwd, { branch: 'main' });
+});
+
+test('createBranch：支持以提交 hash 为基准', async () => {
+  const log = await service.graph(cwd, { limit: 5 });
+  const hash = log.rows[log.rows.length - 1].oid;
+  const { ok } = await service.createBranch(cwd, { name: 'from-hash', base: hash });
+  assert.equal(ok, true);
+  assert.equal(git(['rev-parse', 'HEAD']).trim(), hash, '新分支应指向基准提交');
+  await service.checkout(cwd, { branch: 'main' });
+});
+
+test('checkoutCommit：检出提交进入 detached HEAD', async () => {
+  const log = await service.graph(cwd, { limit: 5 });
+  const oldHead = log.rows[log.rows.length - 1].oid; // 取较老提交，与当前 HEAD 不同
+  const { ok } = await service.checkoutCommit(cwd, { hash: oldHead });
+  assert.equal(ok, true);
+  const head = git(['rev-parse', 'HEAD']).trim();
+  assert.equal(head, oldHead);
+  const symbolic = gitOrFail(['symbolic-ref', '-q', 'HEAD']);
+  assert.notEqual(symbolic.status, 0, '应处于 detached HEAD（symbolic-ref 失败）');
+  // 回到 main，避免影响后续用例。
+  await service.checkout(cwd, { branch: 'main' });
+});
+
+test('checkoutCommit：非法 hash 被拒', async () => {
+  await assert.rejects(
+    service.checkoutCommit(cwd, { hash: 'not-a-hash' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+  await assert.rejects(
+    service.checkoutCommit(cwd, { hash: '..' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+});
+
+test('checkout 远程分支：本地无同名分支时自动创建跟踪分支', async () => {
+  // 制造"仅远程存在"的分支：本地建 → 推送 → 删本地。
+  git(['checkout', '-b', 'remote-only']);
+  git(['push', 'origin', 'remote-only']);
+  git(['checkout', 'main']);
+  git(['branch', '-D', 'remote-only']);
+  const { ok } = await service.checkout(cwd, { branch: 'origin/remote-only' });
+  assert.equal(ok, true);
+  assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD']).trim(), 'remote-only', '应检出并创建本地 remote-only');
+  const upstream = git(['rev-parse', '--abbrev-ref', 'remote-only@{upstream}']).trim();
+  assert.equal(upstream, 'origin/remote-only', '应自动设置上游跟踪');
+  await service.checkout(cwd, { branch: 'main' });
+});
+
+test('checkout 远程分支：本地已有同名分支时切换本地分支', async () => {
+  const { ok } = await service.checkout(cwd, { branch: 'origin/main' });
+  assert.equal(ok, true);
+  assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD']).trim(), 'main', '应切换到本地 main');
+});
+
+test('createBranch：基于远程分支时自动设置跟踪', async () => {
+  const { ok } = await service.createBranch(cwd, { name: 'tracked-new', base: 'origin/remote-only' });
+  assert.equal(ok, true);
+  assert.equal(git(['rev-parse', '--abbrev-ref', 'tracked-new@{upstream}']).trim(), 'origin/remote-only');
+  await service.checkout(cwd, { branch: 'main' });
+});
+
+test('checkout/createBranch：不存在的远程分支被拒', async () => {
+  await assert.rejects(
+    service.checkout(cwd, { branch: 'origin/nope' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+  await assert.rejects(
+    service.createBranch(cwd, { name: 'x', base: 'origin/nope' }),
+    (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST
+  );
+});

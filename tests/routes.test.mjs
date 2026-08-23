@@ -157,3 +157,33 @@ test('fetchAll 全链路', async () => {
   assert.equal(status, 200);
   assert.equal(body.ok, true);
 });
+
+test('checkout 全链路', async () => {
+  const { status, body } = await call('checkout', { branch: 'main' });
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+});
+
+test('checkout 不存在分支 → 400', async () => {
+  const { status, body } = await call('checkout', { branch: 'nope' });
+  assert.equal(status, 400);
+  assert.equal(body.ok, false);
+  assert.equal(body.error.code, 'bad-request');
+});
+
+test('createBranch 全链路', async () => {
+  const { status, body } = await call('createBranch', { name: 'route-branch' });
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD']).trim(), 'route-branch');
+  await call('checkout', { branch: 'main' });
+});
+
+test('checkoutCommit 全链路（detached）', async () => {
+  const hash = git(['rev-parse', 'HEAD']).trim();
+  const { status, body } = await call('checkoutCommit', { hash });
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(git(['rev-parse', 'HEAD']).trim(), hash);
+  await call('checkout', { branch: 'main' });
+});
