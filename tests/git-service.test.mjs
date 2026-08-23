@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -165,6 +165,14 @@ test('非法路径被拒（stage/discard/diff）', async () => {
   await assert.rejects(service.stage(cwd, '../escape'), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST);
   await assert.rejects(service.discard(cwd, 'a\\b'), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST);
   await assert.rejects(service.diff(cwd, '..', false), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST);
+});
+
+test('discard 未跟踪文件 = 删除文件', async () => {
+  const p = path.join(dir, 'untracked-del.txt');
+  writeFileSync(p, 'to be deleted\n');
+  assert.equal(existsSync(p), true);
+  await service.discard(cwd, 'untracked-del.txt');
+  assert.equal(existsSync(p), false, '未跟踪文件应被删除');
 });
 
 test('空提交消息被拒', async () => {
