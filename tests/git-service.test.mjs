@@ -207,6 +207,30 @@ test('discard 未跟踪文件 = 删除文件', async () => {
   assert.equal(existsSync(p), false, '未跟踪文件应被删除');
 });
 
+test('status -uall：未跟踪目录展开为内部文件', async () => {
+  mkdirSync(path.join(dir, 'newdir'), { recursive: true });
+  writeFileSync(path.join(dir, 'newdir', 'a.txt'), 'na\n');
+  writeFileSync(path.join(dir, 'newdir', '.hidden'), 'nh\n');
+  const { entries } = await service.status(cwd);
+  const untracked = entries.filter((en) => en.xy === '??').map((en) => en.path);
+  assert.ok(untracked.includes('newdir/a.txt'), '应展开未跟踪目录内文件');
+  assert.ok(untracked.includes('newdir/.hidden'), '应包含点开头文件');
+  assert.ok(!untracked.some((p) => p === 'newdir/'), '不应出现目录本身的 ?? dir/ 条目');
+  // 清理，避免影响后续用例
+  await service.discard(cwd, 'newdir/a.txt');
+  await service.discard(cwd, 'newdir/.hidden');
+});
+
+test('diff 未跟踪文件：--no-index 输出新增文件 diff', async () => {
+  const p = 'newfile-untracked.txt';
+  writeFileSync(path.join(dir, p), 'hello untracked\n');
+  const { diff: d } = await service.diff(cwd, p, false, true);
+  assert.ok(d.includes('diff --git'), '未跟踪文件 diff 应含 diff --git');
+  assert.ok(d.includes('+hello untracked'), '应显示新增行');
+  assert.ok(d.includes('/dev/null'), '应以 /dev/null 为基准');
+  await service.discard(cwd, p);
+});
+
 test('空提交消息被拒', async () => {
   await assert.rejects(service.commitWithMessage(cwd, '   '), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST);
 });
