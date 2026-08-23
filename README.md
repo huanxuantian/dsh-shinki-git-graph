@@ -31,7 +31,8 @@ dsh plugin --profile web remove dsh-shinki-git-graph
 
 ## 设置
 
-暂无独立设置页（后续版本接入 `pluginSettings`：默认分支范围、页大小、标签显示等）。
+- **分支范围**（当前+上游 / 全部）与**页大小**会持久化到浏览器 localStorage（`dsh-shinki-git-graph:*`），跨会话记忆。
+- 侧边栏设置页的 `pluginSettings` 接线（v0.12+ 声明式设置行）留待后续版本接入。
 
 ## 架构
 
