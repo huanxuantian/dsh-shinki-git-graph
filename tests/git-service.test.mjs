@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createGitService, GitCommandError, E_BAD_REQUEST, E_GIT_MISSING } from '../lib/git-service.js';
+import { createGitService, GitCommandError, E_BAD_REQUEST, E_GIT_MISSING, subdirOf } from '../lib/git-service.js';
 
 let dir;
 let cwd;
@@ -229,6 +229,68 @@ test('diff 未跟踪文件：--no-index 输出新增文件 diff', async () => {
   assert.ok(d.includes('+hello untracked'), '应显示新增行');
   assert.ok(d.includes('/dev/null'), '应以 /dev/null 为基准');
   await service.discard(cwd, p);
+});
+
+test('subdirOf：相对路径计算与边界', () => {
+  assert.equal(subdirOf('C:/repo', 'C:/repo'), '');
+  assert.equal(subdirOf('C:/repo', 'C:/repo/sub1'), 'sub1');
+  assert.equal(subdirOf('C:/repo', 'C:/repo/a/b'), 'a/b');
+  // 不同驱动器 / cwd 不在 root 下 → 空（无法形成相对路径）
+  assert.equal(subdirOf('C:/repo', 'D:/other'), '');
+  assert.equal(subdirOf('', 'C:/repo'), '');
+});
+
+test('init：子目录工作区返回 subdir（相对仓库根）', async () => {
+  const sub = path.join(dir, 'sub');
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(path.join(sub, 's.txt'), 's\n');
+  git(['add', '.']);
+  git(['commit', '-m', 'add sub for init test']);
+  const r = await service.init(sub);
+  assert.equal(r.isRepo, true);
+  assert.equal(r.subdir, 'sub');
+  // 仓库根工作区 subdir 应为空
+  const rRoot = await service.init(dir);
+  assert.equal(rRoot.subdir, '');
+});
+
+test('子目录工作区：status 为仓库根相对路径，写操作（diff/stage/discard）可用', async () => {
+  const sub = path.join(dir, 'sub');
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(path.join(sub, 'w.txt'), 'w1\n');
+  writeFileSync(path.join(dir, 'root.txt'), 'r1\n');
+  git(['add', '.']);
+  git(['commit', '-m', 'base for subdir ops']);
+
+  // 工作区内修改 + 工作区外修改 + 工作区内未跟踪
+  writeFileSync(path.join(sub, 'w.txt'), 'w2\n');
+  writeFileSync(path.join(dir, 'root.txt'), 'r2\n');
+  writeFileSync(path.join(sub, 'u.txt'), 'u\n');
+
+  // status 路径相对仓库根（即使 cwd 是子目录）
+  const st = await service.status(sub);
+  const paths = st.entries.map((e) => e.path);
+  assert.ok(paths.includes('sub/w.txt'), '工作区内修改应以仓库根相对路径列出');
+  assert.ok(paths.includes('root.txt'), '工作区外修改同样以仓库根相对路径列出');
+  assert.ok(paths.includes('sub/u.txt'), '未跟踪文件以仓库根相对路径列出');
+
+  // diff：cwd 为子目录时，仓库根相对路径也能正确解析
+  const d = await service.diff(sub, 'sub/w.txt', false, false);
+  assert.ok(d.diff.includes('w2'), 'diff 应解析子目录下文件的仓库根相对路径');
+
+  // stage：子目录 cwd 下按仓库根相对路径暂存
+  await service.stage(sub, 'sub/w.txt');
+  let st2 = await service.status(sub);
+  assert.equal(st2.entries.find((e) => e.path === 'sub/w.txt').xy, 'M ');
+
+  // discard：子目录 cwd 下可丢弃工作区外文件的修改
+  await service.discard(sub, 'root.txt');
+  assert.equal(git(['show', 'HEAD:root.txt']).trim(), 'r1', '工作区外文件应复位');
+
+  // 清理
+  await service.unstage(sub, 'sub/w.txt');
+  await service.discard(sub, 'sub/w.txt');
+  await service.discard(sub, 'sub/u.txt');
 });
 
 test('空提交消息被拒', async () => {
