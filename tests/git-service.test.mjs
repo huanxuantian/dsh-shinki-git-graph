@@ -682,3 +682,68 @@ test('checkout 远程分支：本地同名未跟踪 → 切换并设置上游', 
   assert.equal(upstream, 'origin/twin', '检出远程分支且本地同名未跟踪时应设置上游');
   await service.checkout(cwd, { branch: 'main' });
 });
+
+// ── 子目录仓库扫描（工作区非 git 时）──
+function initRepoAt(repoDir) {
+  mkdirSync(repoDir, { recursive: true });
+  git(['init', '-b', 'main'], { cwd: repoDir });
+  git(['config', 'user.email', 't@example.com'], { cwd: repoDir });
+  git(['config', 'user.name', 'Tester'], { cwd: repoDir });
+  writeFileSync(path.join(repoDir, 'f.txt'), 'x\n');
+  git(['add', '.'], { cwd: repoDir });
+  git(['commit', '-m', 'c1'], { cwd: repoDir });
+}
+
+test('scanSubRepos：探测子目录仓库（含第 2 层与跳过规则）', async () => {
+  const ws = mkdtempSync(path.join(tmpdir(), 'shinki-ws-'));
+  try {
+    initRepoAt(path.join(ws, 'sub1'));        // 第 1 层
+    initRepoAt(path.join(ws, 'sub2/a'));      // 第 2 层
+    initRepoAt(path.join(ws, 'sub3'));        // 第 1 层
+    initRepoAt(path.join(ws, '.hidden'));     // 隐藏目录 → 跳过
+    initRepoAt(path.join(ws, 'node_modules')); // 依赖目录 → 跳过
+    mkdirSync(path.join(ws, 'plain'), { recursive: true }); // 非仓库
+
+    const subs = await service.scanSubRepos(ws);
+    const paths = subs.map((s) => s.path).sort();
+    assert.deepEqual(paths, ['sub1', 'sub2/a', 'sub3']);
+    const sub1 = subs.find((s) => s.path === 'sub1');
+    assert.equal(sub1.branch, 'main');
+    assert.equal(sub1.head.length > 0, true);
+    assert.equal(sub1.subdir, '');
+    assert.equal(path.isAbsolute(sub1.root), true);
+    assert.equal(sub1.root, path.join(ws, 'sub1'));
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+test('scanSubRepos：深度限制（默认 3 层，第 4 层需显式 depth）', async () => {
+  const ws = mkdtempSync(path.join(tmpdir(), 'shinki-ws-depth-'));
+  try {
+    initRepoAt(path.join(ws, 'a/b/c'));       // 第 3 层
+    initRepoAt(path.join(ws, 'a/b/c/d'));     // 第 4 层
+    let subs = await service.scanSubRepos(ws);
+    let paths = subs.map((s) => s.path);
+    assert.ok(paths.includes('a/b/c'), '第 3 层仓库应被默认深度探测');
+    assert.ok(!paths.includes('a/b/c/d'), '第 4 层仓库不应被默认深度探测');
+    subs = await service.scanSubRepos(ws, { depth: 4 });
+    paths = subs.map((s) => s.path);
+    assert.ok(paths.includes('a/b/c/d'), 'depth=4 时应探测到第 4 层仓库');
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+test('scanSubRepos：嵌套仓库分别列出；空工作区返回空数组', async () => {
+  const ws = mkdtempSync(path.join(tmpdir(), 'shinki-ws-nest-'));
+  try {
+    initRepoAt(path.join(ws, 'outer'));
+    initRepoAt(path.join(ws, 'outer/inner')); // outer 内再嵌一个仓库
+    const subs = await service.scanSubRepos(ws);
+    const paths = subs.map((s) => s.path).sort();
+    assert.deepEqual(paths, ['outer', 'outer/inner']);
+    // 空工作区（无任何仓库）→ []
+    const empty = mkdtempSync(path.join(tmpdir(), 'shinki-ws-empty-'));
+    try {
+      const none = await service.scanSubRepos(empty);
+      assert.deepEqual(none, []);
+    } finally { rmSync(empty, { recursive: true, force: true }); }
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});

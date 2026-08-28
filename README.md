@@ -2,7 +2,9 @@
 
 DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支树视图（类似 VS Code 的 Git Graph 扩展），支持写操作与远程同步。
 
-**当前版本：v0.6.0**（M5 分支写操作 + 远程同步 + git 认证交互 + 便携 git 部署）
+**当前版本：v0.7.0**（子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + git 认证交互 + 便携 git 部署）
+
+- **子目录 git 仓库探测**：当工作区本身不是 git（或不在 git 内）时，自动探测工作区子目录中的 git 仓库（默认最多 3 层，跳过隐藏目录与 node_modules），以**折叠列表**展示（仓库名按**工作区相对路径**），点击某行即**展开单独管理**该仓库（图谱/分支树/暂存区/写操作/同步全部作用于该仓库）；仓库较多时分页「加载更多仓库」。工作区本身是 git 时保持原有单仓库逻辑不变。
 
 - **分支范围**：默认显示**当前分支 + 其上游远程分支**；可切换为**全部本地和远程分支**（此时分支树可勾选过滤）。
 - **分支树**：本地/远程分组树，当前分支 ✓ 标记、上游 ↔ 标注，点击勾选过滤历史。
@@ -15,7 +17,7 @@ DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支�
 
 ## 验证状态
 
-单测全绿（git-service 48 / routes 20 / lanes 7 / fence 6）。已在副本运行环境（`D:\vmx\test\dsh-win-x64`，端口 3081）验证：bundle 加载 v0.6.0、API 路由挂载、fence 放行、`dsh.ps1 check` 便携 git 注入成功、git 认证交互路由（prompt-poll/answer）；GUI 交互（同步对话框/分支操作/认证输入）已人工确认主要流程。原环境（`D:\vmx\dsh-win-x64`）未受影响。
+单测全绿（**95 个**：git-service 56 / routes 26 / lanes 7 / fence 6；新增子仓库扫描与 repoPath 路由用例）。已用真实路径 `D:\AI\win\data\home` 全链路实测（`tests/validate-subrepos.mjs`）：工作区非 git 时 `init` 返回子仓库列表（3 层内、跳过隐藏/node_modules、排除第 4 层），空白仓库以 `HEAD` 分支列出，`repoPath` 定位子仓库的 branches/graph/status 正常，路径逃逸（`..`/`C:/x`/`/abs`）均 400 拒绝；工作区为 git 时保持原逻辑。已在副本运行环境（`D:\vmx\test\dsh-win-x64`，端口 3081）验证：bundle 加载 v0.7.0、API 路由挂载、fence 放行、`dsh.ps1 check` 便携 git 注入成功、git 认证交互路由（prompt-poll/answer）；GUI 交互（同步对话框/分支操作/认证输入）已人工确认主要流程。原环境（`D:\vmx\dsh-win-x64`）未受影响。
 
 ## 安装
 
@@ -71,6 +73,7 @@ node tests/fence.test.mjs
 
 ## 版本历史
 
+- **v0.7.0**：**子目录 git 仓库探测**——工作区本身非 git 时扫描子目录 git 仓库（默认 3 层，跳过隐藏/node_modules，上限防护），折叠列表（工作区相对路径）+ 分页「加载更多」；点击展开对单个仓库独立管理（全部方法经 `repoPath` 定位，host 侧防路径逃逸）；工作区为 git 时逻辑不变。
 - **v0.6.0**：M5 分支写操作（切换/新建/检出，远程分支自动跟踪、未跟踪自动绑定默认远程同名、linkCurrent 会话参数）；页大小设置 UI + pluginSettings 接线；跨页泳道续接；启动体验（无会话提示 + 自动轮询）；pull/push 增强（`-u`/`--rebase`/ahead-behind）；git 认证交互；便携 git 自动部署。
 - **v0.5.0**：提交行右键「查看 diff」内联化；pull/push/fetch-all 同步（含 tag 推送/拉取、fetch-only）。
 - **v0.3.x**：泳道图 / 分支树 / 详情展开 / 多分支颜色（初版布局）。

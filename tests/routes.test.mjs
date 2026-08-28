@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -8,6 +8,7 @@ import http from 'node:http';
 import { createHandler } from '../lib/routes.js';
 
 let dir;
+let wsDir; // 非 git 工作区（子目录仓库场景），session s2
 let server;
 let port;
 let originDir;
@@ -34,8 +35,25 @@ before(async () => {
   git(['--git-dir', originDir, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
   git(['remote', 'add', 'origin', originDir]);
 
+  // 非 git 工作区（子目录仓库场景）：sub1、sub1/sub2 为独立 git 仓库，
+  // plain 为普通目录。
+  wsDir = mkdtempSync(path.join(tmpdir(), 'shinki-ws-'));
+  for (const rel of ['sub1', 'sub1/sub2']) {
+    const repoDir = path.join(wsDir, rel);
+    mkdirSync(repoDir, { recursive: true });
+    git(['init', '-b', 'main'], { cwd: repoDir });
+    git(['config', 'user.email', 't@example.com'], { cwd: repoDir });
+    git(['config', 'user.name', 'Tester'], { cwd: repoDir });
+    writeFileSync(path.join(repoDir, 'f.txt'), 'x\n');
+    git(['add', '.'], { cwd: repoDir });
+    git(['commit', '-m', 'c1'], { cwd: repoDir });
+  }
+  mkdirSync(path.join(wsDir, 'plain'), { recursive: true });
+
   const ctx = {
-    sessions: { get: (id) => (id === 's1' ? { header: { cwd: dir } } : undefined) },
+    sessions: {
+      get: (id) => (id === 's1' ? { header: { cwd: dir } } : id === 's2' ? { header: { cwd: wsDir } } : undefined),
+    },
     webRuntime: { trustedHosts: [] },
     logger: { warn() {} },
   };
@@ -48,6 +66,7 @@ before(async () => {
 after(() => {
   try { server.close(); } catch { /* ignore */ }
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { rmSync(wsDir, { recursive: true, force: true }); } catch { /* ignore */ }
   try { rmSync(originDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
@@ -56,6 +75,16 @@ async function call(method, payload) {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ sessionId: 's1', method, ...(payload ?? {}) }),
+  });
+  return { status: res.status, body: await res.json() };
+}
+
+/** 针对非 git 工作区（session s2）的请求。 */
+async function callSub(method, payload) {
+  const res = await fetch(`http://127.0.0.1:${port}/shinki-git/api`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionId: 's2', method, ...(payload ?? {}) }),
   });
   return { status: res.status, body: await res.json() };
 }
@@ -204,4 +233,74 @@ test('checkoutCommit 全链路（detached）', async () => {
   assert.equal(body.ok, true);
   assert.equal(git(['rev-parse', 'HEAD']).trim(), hash);
   await call('checkout', { branch: 'main' });
+});
+
+// ── 子目录仓库（工作区非 git）──
+test('init：非 git 工作区返回 subrepos（子目录仓库，工作区相对路径）', async () => {
+  const { status, body } = await callSub('init');
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.value.isRepo, false);
+  const paths = body.value.subrepos.map((s) => s.path).sort();
+  assert.deepEqual(paths, ['sub1', 'sub1/sub2']);
+  const sub1 = body.value.subrepos.find((s) => s.path === 'sub1');
+  assert.equal(sub1.branch, 'main');
+  assert.equal(sub1.subdir, '');
+  assert.ok(path.isAbsolute(sub1.root));
+});
+
+test('branches/graph/status：repoPath 定位到子仓库', async () => {
+  const b = await callSub('branches', { repoPath: 'sub1' });
+  assert.equal(b.status, 200);
+  assert.equal(b.body.ok, true);
+  assert.equal(b.body.value.current, 'main');
+  const g = await callSub('graph', { repoPath: 'sub1', limit: 10 });
+  assert.equal(g.status, 200);
+  assert.equal(g.body.ok, true);
+  assert.ok(g.body.value.rows.length >= 1);
+  // 在 sub1 内造一个脏文件，status 路径应相对子仓库根（'dirty.txt'，
+  // 而非带 'sub1/' 前缀）——验证"内部文件列表按对应 git 相对路径显示"。
+  const dirty = path.join(wsDir, 'sub1', 'dirty.txt');
+  writeFileSync(dirty, 'x\n');
+  try {
+    const st = await callSub('status', { repoPath: 'sub1' });
+    assert.equal(st.status, 200);
+    assert.equal(st.body.ok, true);
+    assert.ok(st.body.value.entries.some((e) => e.path === 'dirty.txt'), 'status 应列出子仓库根相对路径');
+    assert.ok(!st.body.value.entries.some((e) => e.path.startsWith('sub1/')), '不应带工作区前缀');
+  } finally { rmSync(dirty, { force: true }); }
+});
+
+test('init：指定 repoPath 时定位子仓库并返回其身份', async () => {
+  const { status, body } = await callSub('init', { repoPath: 'sub1/sub2' });
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.value.isRepo, true);
+  assert.equal(body.value.branch, 'main');
+  // 子仓库根即仓库根 → subdir 为空
+  assert.equal(body.value.subdir, '');
+});
+
+test('repoPath 逃逸被拒 → 400', async () => {
+  for (const bad of ['..', '../x', '..\\x', 'C:/x', '/abs', 'a/../b']) {
+    const { status, body } = await callSub('branches', { repoPath: bad });
+    assert.equal(status, 400, `repoPath=${JSON.stringify(bad)} 应被拒`);
+    assert.equal(body.ok, false);
+    assert.equal(body.error.code, 'bad-request');
+  }
+});
+
+test('repoPath 指向非仓库目录 → not-a-repo 软失败', async () => {
+  const { status, body } = await callSub('status', { repoPath: 'plain' });
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.value.error, 'not-a-repo');
+});
+
+test('init：git 工作区保持原逻辑（不返回 subrepos）', async () => {
+  const { status, body } = await call('init');
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.value.isRepo, true);
+  assert.equal(body.value.subrepos, undefined);
 });
