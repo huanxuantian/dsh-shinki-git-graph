@@ -48,6 +48,12 @@ before(async () => {
     git(['add', '.'], { cwd: repoDir });
     git(['commit', '-m', 'c1'], { cwd: repoDir });
   }
+  // 空白仓库（无提交）：graph 应返回空图谱而非报错
+  const blankDir = path.join(wsDir, 'blank-sub');
+  mkdirSync(blankDir, { recursive: true });
+  git(['init', '-b', 'main'], { cwd: blankDir });
+  git(['config', 'user.email', 't@example.com'], { cwd: blankDir });
+  git(['config', 'user.name', 'Tester'], { cwd: blankDir });
   mkdirSync(path.join(wsDir, 'plain'), { recursive: true });
 
   const ctx = {
@@ -242,7 +248,7 @@ test('init：非 git 工作区返回 subrepos（子目录仓库，工作区相�
   assert.equal(body.ok, true);
   assert.equal(body.value.isRepo, false);
   const paths = body.value.subrepos.map((s) => s.path).sort();
-  assert.deepEqual(paths, ['sub1', 'sub1/sub2']);
+  assert.deepEqual(paths, ['blank-sub', 'sub1', 'sub1/sub2']);
   const sub1 = body.value.subrepos.find((s) => s.path === 'sub1');
   assert.equal(sub1.branch, 'main');
   assert.equal(sub1.subdir, '');
@@ -295,6 +301,29 @@ test('repoPath 指向非仓库目录 → not-a-repo 软失败', async () => {
   assert.equal(status, 200);
   assert.equal(body.ok, true);
   assert.equal(body.value.error, 'not-a-repo');
+});
+
+test('graph：空白子仓库经 repoPath 返回空图谱而非报错', async () => {
+  const { status, body } = await callSub('graph', { repoPath: 'blank-sub', limit: 10 });
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  assert.deepEqual(body.value.rows, []);
+  assert.equal(body.value.ended, true);
+});
+
+test('createBranch：空白子仓库无参考新建（repoPath）', async () => {
+  // 无 base 新建：git 层面成功；空白仓库不显示任何分支（branch=''，不暴露 unborn 'main'）
+  const c = await callSub('createBranch', { repoPath: 'blank-sub', name: 'feature-x', base: '' });
+  assert.equal(c.status, 200);
+  assert.equal(c.body.ok, true);
+  const id = await callSub('init', { repoPath: 'blank-sub' });
+  assert.equal(id.body.value.isRepo, true);
+  assert.equal(id.body.value.branch, '');
+  // 以不存在的 base 新建 → 400（空白仓库无分支可作基准）
+  const c2 = await callSub('createBranch', { repoPath: 'blank-sub', name: 'feature-y', base: 'feature-x' });
+  assert.equal(c2.status, 400);
+  assert.equal(c2.body.ok, false);
+  assert.equal(c2.body.error.code, 'bad-request');
 });
 
 test('init：git 工作区保持原逻辑（不返回 subrepos）', async () => {

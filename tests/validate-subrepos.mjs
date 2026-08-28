@@ -42,6 +42,10 @@ show('2b) graph(repo-one)', { status: g.status, ok: g.body.ok, rows: g.body.valu
 const st = await call('status', { repoPath: 'repo-one' });
 show('2c) status(repo-one)', { status: st.status, ok: st.body.ok, entries: st.body.value?.entries, error: st.body.error });
 
+// 2d) 空白仓库 graph：应返回空图谱而非报错
+const gb = await call('graph', { repoPath: 'repo-blank', limit: 10 });
+show('2d) graph(repo-blank)', { status: gb.status, ok: gb.body.ok, rows: gb.body.value?.rows?.length, ended: gb.body.value?.ended, error: gb.body.error });
+
 // 3) 逃逸/非仓库校验
 for (const bad of ['..', 'C:/x', '/abs', '..\\x']) {
   const r = await call('status', { repoPath: bad });
@@ -52,6 +56,17 @@ for (const bad of ['..', 'C:/x', '/abs', '..\\x']) {
 const hasL3 = init.body.value.subrepos?.some((s) => s.path === 'nested/deep/deeper');
 const hasL4 = init.body.value.subrepos?.some((s) => s.path === 'nested/deep/deeper/fourth');
 console.log(`\n4) 默认深度: 第 3 层(nested/deep/deeper) 探测=${hasL3}（期望 true）；第 4 层(nested/deep/deeper/fourth) 探测=${hasL4}（期望 false）`);
+
+// 5) 子模块：子模块的 .git 是文件（gitdir: ...），scanSubRepos 应把它也列为子仓库；
+//    父仓库以单仓库模式打开时，status 里子模块以 gitlink（如 " M child"）呈现
+const subPaths = init.body.value.subrepos?.map((s) => s.path).filter((p) => p.startsWith('submod')).sort();
+show('5) subrepos 中 submod* 相关', subPaths);
+const parentSt = await call('status', { repoPath: 'submod-parent' });
+show('5b) status(submod-parent) 的 entries(path)', parentSt.body.value?.entries?.map((e) => ({ path: e.path, xy: e.xy })));
+const parentInit = await call('init', { repoPath: 'submod-parent' });
+show('5c) init(submod-parent)', { isRepo: parentInit.body.value?.isRepo, branch: parentInit.body.value?.branch });
+const childInit = await call('init', { repoPath: 'submod-parent/child' });
+show('5d) init(submod-parent/child)（子模块自身）', { isRepo: childInit.body.value?.isRepo, branch: childInit.body.value?.branch });
 
 server.close();
 process.exit(0);

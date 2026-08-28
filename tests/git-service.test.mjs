@@ -747,3 +747,34 @@ test('scanSubRepos：嵌套仓库分别列出；空工作区返回空数组', as
     } finally { rmSync(empty, { recursive: true, force: true }); }
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
+
+test('graph：空白仓库（无提交）返回空图谱而非报错', async () => {
+  const blank = mkdtempSync(path.join(tmpdir(), 'shinki-blank-'));
+  try {
+    git(['init', '-b', 'main'], { cwd: blank });
+    git(['config', 'user.email', 't@example.com'], { cwd: blank });
+    git(['config', 'user.name', 'Tester'], { cwd: blank });
+    // init：空白仓库无真实分支 → branch=''（不暴露 unborn 的 'main'）
+    const id = await service.init(blank);
+    assert.equal(id.isRepo, true);
+    assert.equal(id.branch, '');
+    assert.equal(id.head, '');
+    // branches：空白仓库不列出任何分支
+    const b1 = await service.branches(blank);
+    assert.equal(b1.current, '');
+    assert.deepEqual(b1.local, []);
+    // graph：revs=['HEAD'] 与 all 都返回空而非报错
+    const r = await service.graph(blank, { revs: ['HEAD'] });
+    assert.deepEqual(r.rows, []);
+    assert.equal(r.ended, true);
+    const a = await service.graph(blank, { all: true });
+    assert.deepEqual(a.rows, []);
+    assert.equal(a.ended, true);
+    // 无 base 新建分支：git 层面成功（unborn），branches 仍不列出（首次提交后才可见）
+    const c1 = await service.createBranch(blank, { name: 'dev', base: '' });
+    assert.equal(c1.ok, true);
+    const b2 = await service.branches(blank);
+    assert.equal(b2.current, '');
+    assert.deepEqual(b2.local, []);
+  } finally { rmSync(blank, { recursive: true, force: true }); }
+});
