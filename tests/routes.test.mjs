@@ -312,18 +312,18 @@ test('graph：空白子仓库经 repoPath 返回空图谱而非报错', async ()
 });
 
 test('createBranch：空白子仓库无参考新建（repoPath）', async () => {
-  // 无 base 新建：git 层面成功；空白仓库不显示任何分支（branch=''，不暴露 unborn 'main'）
+  // 无 base 新建：应成功，且 init 反映新分支（symbolic-ref 回退）
   const c = await callSub('createBranch', { repoPath: 'blank-sub', name: 'feature-x', base: '' });
   assert.equal(c.status, 200);
   assert.equal(c.body.ok, true);
-  const id = await callSub('init', { repoPath: 'blank-sub' });
-  assert.equal(id.body.value.isRepo, true);
-  assert.equal(id.body.value.branch, '');
-  // 以不存在的 base 新建 → 400（空白仓库无分支可作基准）
+  let id = await callSub('init', { repoPath: 'blank-sub' });
+  assert.equal(id.body.value.branch, 'feature-x');
+  // 以 unborn 当前分支为 base 新建：回退为无 base 创建
   const c2 = await callSub('createBranch', { repoPath: 'blank-sub', name: 'feature-y', base: 'feature-x' });
-  assert.equal(c2.status, 400);
-  assert.equal(c2.body.ok, false);
-  assert.equal(c2.body.error.code, 'bad-request');
+  assert.equal(c2.status, 200);
+  assert.equal(c2.body.ok, true);
+  id = await callSub('init', { repoPath: 'blank-sub' });
+  assert.equal(id.body.value.branch, 'feature-y');
 });
 
 test('init：git 工作区保持原逻辑（不返回 subrepos）', async () => {

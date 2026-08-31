@@ -754,27 +754,36 @@ test('graph：空白仓库（无提交）返回空图谱而非报错', async () 
     git(['init', '-b', 'main'], { cwd: blank });
     git(['config', 'user.email', 't@example.com'], { cwd: blank });
     git(['config', 'user.name', 'Tester'], { cwd: blank });
-    // init：空白仓库无真实分支 → branch=''（不暴露 unborn 的 'main'）
+    // init 应识别 unborn 当前分支名（symbolic-ref 回退），而非 'HEAD'
     const id = await service.init(blank);
     assert.equal(id.isRepo, true);
-    assert.equal(id.branch, '');
+    assert.equal(id.branch, 'main');
     assert.equal(id.head, '');
-    // branches：空白仓库不列出任何分支
+    // branches 应把 unborn 当前分支列出（isHead），否则 UI 无从显示
     const b1 = await service.branches(blank);
-    assert.equal(b1.current, '');
-    assert.deepEqual(b1.local, []);
-    // graph：revs=['HEAD'] 与 all 都返回空而非报错
+    assert.equal(b1.current, 'main');
+    assert.ok(b1.local.some((x) => x.name === 'main' && x.isHead && x.oid === ''));
+    // graph：revs=['HEAD'] 与 revs=[当前 unborn 分支] 都返回空而非报错
     const r = await service.graph(blank, { revs: ['HEAD'] });
     assert.deepEqual(r.rows, []);
     assert.equal(r.ended, true);
+    const r2 = await service.graph(blank, { revs: ['main'] });
+    assert.deepEqual(r2.rows, []);
+    assert.equal(r2.ended, true);
     const a = await service.graph(blank, { all: true });
     assert.deepEqual(a.rows, []);
     assert.equal(a.ended, true);
-    // 无 base 新建分支：git 层面成功（unborn），branches 仍不列出（首次提交后才可见）
+    // 无 base 新建分支 → 成功且可见（current 更新、local 含新分支）
     const c1 = await service.createBranch(blank, { name: 'dev', base: '' });
     assert.equal(c1.ok, true);
     const b2 = await service.branches(blank);
-    assert.equal(b2.current, '');
-    assert.deepEqual(b2.local, []);
+    assert.equal(b2.current, 'dev');
+    assert.ok(b2.local.some((x) => x.name === 'dev' && x.isHead));
+    // 以 unborn 当前分支为 base 新建 → 回退为无 base 创建，同样成功
+    const c2 = await service.createBranch(blank, { name: 'fix', base: 'dev' });
+    assert.equal(c2.ok, true);
+    const b3 = await service.branches(blank);
+    assert.equal(b3.current, 'fix');
+    assert.ok(b3.local.some((x) => x.name === 'fix' && x.isHead));
   } finally { rmSync(blank, { recursive: true, force: true }); }
 });
