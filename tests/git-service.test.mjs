@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -197,6 +197,16 @@ test('非法路径被拒（stage/discard/diff）', async () => {
   await assert.rejects(service.stage(cwd, '../escape'), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST);
   await assert.rejects(service.discard(cwd, 'a\\b'), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST);
   await assert.rejects(service.diff(cwd, '..', false), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST);
+});
+
+test('absPath：仓库根相对条目解析为绝对路径，非法/逃逸被拒', async () => {
+  // 根目录以 git 输出的 realpath 为准（macOS /var → /private/var 差异由 realpath 归一）。
+  const root = realpathSync(dir);
+  const { abs } = await service.absPath(cwd, 'a.txt');
+  assert.equal(abs, path.join(root, 'a.txt'));
+  for (const bad of ['', '..', '../x', 'a\\b', 'C:/x', null]) {
+    await assert.rejects(service.absPath(cwd, bad), (e) => e instanceof GitCommandError && e.code === E_BAD_REQUEST, `rel=${JSON.stringify(bad)} 应被拒`);
+  }
 });
 
 test('discard 未跟踪文件 = 删除文件', async () => {

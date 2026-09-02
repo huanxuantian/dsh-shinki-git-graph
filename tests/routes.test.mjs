@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -292,6 +292,23 @@ test('repoPath 逃逸被拒 → 400', async () => {
     const { status, body } = await callSub('branches', { repoPath: bad });
     assert.equal(status, 400, `repoPath=${JSON.stringify(bad)} 应被拒`);
     assert.equal(body.ok, false);
+    assert.equal(body.error.code, 'bad-request');
+  }
+});
+
+test('absPath：解析绝对路径；非法/逃逸条目被拒', async () => {
+  // 顶层仓库（s1，cwd=dir）与子目录仓库（s2/repoPath=sub1）各自返回真实绝对路径
+  const top = await call('absPath', { path: 'a.txt' });
+  assert.equal(top.status, 200);
+  assert.equal(top.body.value.abs, path.join(realpathSync(dir), 'a.txt'));
+
+  const sub = await callSub('absPath', { repoPath: 'sub1', path: 'f.txt' });
+  assert.equal(sub.status, 200);
+  assert.equal(sub.body.value.abs, path.join(realpathSync(path.join(wsDir, 'sub1')), 'f.txt'));
+
+  for (const bad of ['', '..', '../x', '..\\x', 'C:/x', '/abs', 'a/../b']) {
+    const { status, body } = await call('absPath', { path: bad });
+    assert.equal(status, 400, `path=${JSON.stringify(bad)} 应被拒`);
     assert.equal(body.error.code, 'bad-request');
   }
 });
