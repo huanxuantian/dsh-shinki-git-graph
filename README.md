@@ -2,7 +2,7 @@
 
 DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支树视图（类似 VS Code 的 Git Graph 扩展），支持写操作与远程同步。
 
-**当前版本：v0.7.1**（无会话停止自动刷新 + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + git 认证交互 + 便携 git 部署）
+**当前版本：v0.7.2**（工作目录三级解析：活跃会话/磁盘会话头/工作区台账 + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + git 认证交互 + 便携 git 部署）
 
 - **子目录 git 仓库探测**：当工作区本身不是 git（或不在 git 内）时，自动探测工作区子目录中的 git 仓库（默认最多 3 层，跳过隐藏目录与 node_modules），以**折叠列表**展示（仓库名按**工作区相对路径**），点击某行即**展开单独管理**该仓库（图谱/分支树/暂存区/写操作/同步全部作用于该仓库）；仓库较多时分页「加载更多仓库」。工作区本身是 git 时保持原有单仓库逻辑不变。
 
@@ -16,6 +16,8 @@ DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支�
 - **远程同步**：头部 **⇣ 拉取 / ⇡ 推送** 按钮——选择**类型（分支/标签）**与远程源、分支或标签后执行；拉取可选「仅拉取（fetch，不合并/不签出）」与「变基（--rebase）」，推送可选「设置上游（-u）」，拉取标签恒为 fetch，支持自定义标签名输入与「拉取全部（fetch --all）」；**git 认证交互**（账号/密码/SSH passphrase 原生输入框）；push 前显示 ahead/behind 提示；操作后自动刷新图谱。
 
 ## 验证状态
+
+**工作目录解析（v0.7.2）**：`tests/session-cwd.test.mjs` 8/8 通过（活跃会话优先 / 未打开会话从磁盘会话头解析 / 工作区台账兜底 / 未知 id → null / 可选服务缺失优雅降级 / 目录不存在拒绝 / 空 id / 缓存每次 id 仅一次扫描）。真实数据复核：A571（`D:\hzw\work\car` 子目录，7 万+ 文件）的 4 个会话在**未打开**状态下均解析到 `D:\hzw\work\car\brank_brank\example\A571`；进程内直调真实 handler 端到端实测 `init` 721ms（`isRepo=true root=D:/hzw/work/car subdir=brank_brank/example/A571`）、`graph` 746ms（10 行），未知会话仍 404 `session-not-found`。排查记录见仓库 `doc/调试笔记-20260911-git图谱工作区无会话无限刷新.md`。
 
 单测全绿（**95 个**：git-service 56 / routes 26 / lanes 7 / fence 6；新增子仓库扫描与 repoPath 路由用例）。已用真实路径 `D:\AI\win\data\home` 全链路实测（`tests/validate-subrepos.mjs`）：工作区非 git 时 `init` 返回子仓库列表（3 层内、跳过隐藏/node_modules、排除第 4 层），空白仓库以 `HEAD` 分支列出，`repoPath` 定位子仓库的 branches/graph/status 正常，路径逃逸（`..`/`C:/x`/`/abs`）均 400 拒绝；工作区为 git 时保持原逻辑。已在副本运行环境（`D:\vmx\test\dsh-win-x64`，端口 3081）验证：bundle 加载 v0.7.0、API 路由挂载、fence 放行、`dsh.ps1 check` 便携 git 注入成功、git 认证交互路由（prompt-poll/answer）；GUI 交互（同步对话框/分支操作/认证输入）已人工确认主要流程。原环境（`D:\vmx\dsh-win-x64`）未受影响。
 
@@ -73,6 +75,7 @@ node tests/fence.test.mjs
 
 ## 版本历史
 
+- **v0.7.2**：**工作目录改为三级解析（修 A571 工作区打不开）**——原先只从 `ctx.sessions.get(sessionId)` 取 cwd，而那是**内存里"当前已打开"的会话表**：没打开的会话一律 404 `session-not-found`，于是同一仓库下 p507 正常、A571 一直失败。现按序回退：① 活跃会话 → ② 磁盘会话头（`sessionQuery.listSessions()`） → ③ 工作区台账（`workspaceRegistry.list()` 按 `sessionIds` 反查 `path`）；后两者用 `ctx.get()` 可选获取，缺失时优雅降级为原行为。仅回环客户端可达（trust fence 未变），路径仍全部由宿主推导。
 - **v0.7.1**：**无会话时不再无限刷新**——better-sidebar 的面板 scope 只带 `sessionId`（不含 workspace id/路径），工作区没有活动会话时插件拿不到 cwd、无法解析仓库；原实现每 2s 无限重试，表现为 A571 这类 workspace「一直在反复刷新」且始终没有 git 信息。现改为**有界重试**（10 × 2s ≈ 20s）后停止自动刷新，给出说明与「重试」按钮；新会话出现或手动重试会重置预算。排查与根因见 `doc/调试笔记-20260910-git图谱工作区无会话反复刷新.md`。
 - **v0.7.0**：**子目录 git 仓库探测**——工作区本身非 git 时扫描子目录 git 仓库（默认 3 层，跳过隐藏/node_modules，上限防护），折叠列表（工作区相对路径）+ 分页「加载更多」；点击展开对单个仓库独立管理（全部方法经 `repoPath` 定位，host 侧防路径逃逸）；工作区为 git 时逻辑不变。
 - **v0.6.0**：M5 分支写操作（切换/新建/检出，远程分支自动跟踪、未跟踪自动绑定默认远程同名、linkCurrent 会话参数）；页大小设置 UI + pluginSettings 接线；跨页泳道续接；启动体验（无会话提示 + 自动轮询）；pull/push 增强（`-u`/`--rebase`/ahead-behind）；git 认证交互；便携 git 自动部署。
