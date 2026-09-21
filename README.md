@@ -2,7 +2,13 @@
 
 DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支树视图（类似 VS Code 的 Git Graph 扩展），支持写操作与远程同步。
 
-**当前版本：v0.7.3**（工作目录四级解析：活跃会话/磁盘会话头/工作区台账/成员资格校验过的 scope.cwd + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + git 认证交互 + 便携 git 部署）
+**当前版本：v0.8.0**（工作目录四级解析：活跃会话/磁盘会话头/工作区台账/成员资格校验过的 scope.cwd + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + **网页端 git 认证（GIT_ASKPASS 桥，绝不停留在终端）** + 便携 git 部署）
+
+> ⚠ **版本号有两处，必须同步**：`package.json` 的 `version` 与 `lib/client.js` 的 `PLUGIN_VERSION`
+> （侧边栏角标显示的就是后者；浏览器半边读不到 package.json，所以是硬编码副本）。
+> 只改前者会出现「json 已是新版本、界面仍显示旧版本」—— 0.8.0 时踩过。
+> 另：改完插件要在 profile 目录 `pnpm install` **重新物化**（`file:` 依赖是 pnpm 的硬链接副本，
+> 改源目录不生效），再**重启 dsh Web 服务**。
 
 - **子目录 git 仓库探测**：当工作区本身不是 git（或不在 git 内）时，自动探测工作区子目录中的 git 仓库（默认最多 3 层，跳过隐藏目录与 node_modules），以**折叠列表**展示（仓库名按**工作区相对路径**），点击某行即**展开单独管理**该仓库（图谱/分支树/暂存区/写操作/同步全部作用于该仓库）；仓库较多时分页「加载更多仓库」。工作区本身是 git 时保持原有单仓库逻辑不变。
 
@@ -49,6 +55,35 @@ dsh plugin --profile web remove dsh-shinki-git-graph
 
 - **分支范围**（当前+上游 / 全部）、**页大小**（50/100/200/500）、**显示标签**：侧边栏设置页声明式设置行（`pluginSettings`，v0.12+），localStorage 回退双写，跨会话记忆；页大小也保留「⋯」菜单入口。
 
+## Git 认证（v0.8.0 重做，※ 本机 Linux 冻结事故的修复）
+
+**背景（2026-09-22 实测）**：旧实现以为「git 把凭据提示写到 stderr、从 stdin 读答案」，于是
+`netEnv()` 设了 `GIT_TERMINAL_PROMPT=1` 且把 `GIT_ASKPASS` **清空**，靠 `lib/git-runner.js` 的
+`onPrompt` 从 stderr 抓提示。**这在 Linux 上是错的**：git 会 `open("/dev/tty")` 在**控制终端**上
+提示并阻塞在那里——stderr 一直是空的（实测：提示出现在 pty 上，探针捕获的 stderr 为 `""`）。
+dsh web 继承了控制终端时，提示被打进宿主控制台、git 阻塞不返回 = **推送时整个控制台卡死、只能强制重启**。
+
+**现在的机制**（对齐 VS Code 的 `extensions/git/src/askpass*.ts`，见文末参考）：
+
+| 层 | 实现 |
+|---|---|
+| 环境 | 网络操作（push/pull/fetchAll）一律 `GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS=lib/askpass.sh`（Windows 为 `askpass.cmd`）；即使桥不可用，git 也只会**快速失败**，绝不再碰终端 |
+| 助手 | git 以 `askpass 「Username for 'https://…': 」` 调用 → `lib/askpass-main.mjs` 把提示 POST 到插件自己的回环端点 `/shinki-git/api`（`method=askpass-wait`，带**每操作一次性令牌**）→ 阻塞等浏览器回答 → 把答案打到 **stdout**（git 只取 stdout，所以诊断信息一律走 stderr） |
+| 桥 | host 侧 `pendingPrompts` 按**每条提示**（不是每个操作）登记：一次操作会问两次（用户名、密码），并发/交错提问正是 VS Code 那个老问题（microsoft/vscode#230033）的根源 |
+| 界面 | 浏览器轮询 `prompt-poll` 拿 `{prompt, promptId}`，弹原生对话框，用 `prompt-answer`（回带 `promptId`）作答；`密码/口令` 类提示自动用掩码输入 |
+| 身份留存 | **由 git 自己完成**：认证成功后 git 会调用 `credential approve` 交给已配置的助手（`store`/`libsecret`/`osxkeychain`/`wincred`/GCM），所以「下次不再问」只需要一个助手；插件只**如实告知**——`credentials.helperConfigured` 决定提示「凭据已保存」还是「未配置凭据助手，下次仍会询问」。认证失败时插件额外执行 `credential reject` 清掉坏凭据 |
+| SSH | 维持非交互（`GIT_SSH_COMMAND='ssh -o BatchMode=yes'`、`SSH_ASKPASS_REQUIRE=never`）：SSH 走密钥/agent，失败即快速报错，同样不会在终端挂住 |
+
+**为什么助手不能从 stdin 拿答案**：实测 askpass 助手的 stdin **不是** git 的 stdin 管道
+（`read -t 3` 直接 EOF/超时）。VS Code 也是走带外通道（IPC 管道 + `VSCODE_GIT_ASKPASS_PIPE` 文件）；
+本插件用回环 HTTP + 每操作令牌，跨平台且无需额外 socket。助手任何失败都**不打印 stdout 并以非 0 退出**，
+让 git 用自己的认证错误收场，而不是无限等待。
+
+**测试**：`tests/askpass.test.mjs`（4/4）用**真实 git + 真实 askpass 脚本 + 真实回环 HTTP**，远端是
+一个「先 401、认证后走 `git http-backend`」的智能 HTTP 服务，覆盖：①需认证的 push 经网页桥完成，
+且**在 pty 下全程没有出现任何凭据提示**；②认证成功后凭据由助手落盘 → 第二次推送**不再提示**；
+③认证失败后坏凭据不残留；④伪造令牌 → 403。
+
 ## 架构
 
 - **host 半区**（`lib/index.js`，Node）：git 数据服务 + `POST /shinki-git/api` 路由。
@@ -75,6 +110,7 @@ node tests/fence.test.mjs
 
 ## 版本历史
 
+- **v0.8.0**：**网页端 git 认证（askpass 桥）**——修复 Linux 上「推送时凭据提示落到宿主控制台、git 阻塞把整机卡死」的事故：网络操作改 `GIT_TERMINAL_PROMPT=0` + 真正的 `GIT_ASKPASS` 助手（`lib/askpass.sh|.cmd` + `lib/askpass-main.mjs`，经回环 HTTP 送回浏览器对话框，每操作一次性令牌）；`pendingPrompts` 改为按提示 id 登记（支持一次操作问两次、避免交错）；如实上报凭据助手状态并在认证失败时 `credential reject`。参考 VS Code `extensions/git/src/askpass.ts|askpass-main.ts`。
 - **v0.7.3**：**cwd 提示（成员资格校验）+ 精确错误码**。① 更正认知并利用既有能力：better-sidebar 的面板 scope 是 `{ sessionId, cwd }`（cwd 取自客户端侧、磁盘来源的会话列表），其自身 host 端也是"校验成员资格后才把客户端 cwd 当命令 cwd 用"；本插件现把 `scope.cwd` 作为**提示**随请求上报，host 仅在它能 realpath 命中**自己台账里的某个工作区路径**时才采信，且**台账不可用即忽略**（fail closed）—— 于是"会话既没打开、台账也没索引到"的情况也能出图，而浏览器依旧无法把 git 指向任意目录。② 错误语义细分：会话存在但目录已消失/改名 → 404 `workspace-missing`（附具体路径，客户端显示错误而非无意义轮询）；会话确实找不到 → 仍 404 `session-not-found`（客户端走有界重试 + 提示）。
 - **v0.7.2**：**工作目录改为三级解析（修 A571 工作区打不开）**——原先只从 `ctx.sessions.get(sessionId)` 取 cwd，而那是**内存里"当前已打开"的会话表**：没打开的会话一律 404 `session-not-found`，于是同一仓库下 p507 正常、A571 一直失败。现按序回退：① 活跃会话 → ② 磁盘会话头（`sessionQuery.listSessions()`） → ③ 工作区台账（`workspaceRegistry.list()` 按 `sessionIds` 反查 `path`）；后两者用 `ctx.get()` 可选获取，缺失时优雅降级为原行为。仅回环客户端可达（trust fence 未变），路径仍全部由宿主推导。
 - **v0.7.1**：**面板拿不到可用会话时不再无限刷新**——原实现每 2s 无上限重试，表现为 A571 这类 workspace「一直在反复刷新」且始终没有 git 信息。现改为**有界重试**（10 × 2s ≈ 20s）后停止自动刷新，给出说明与「重试」按钮；新会话出现或手动重试会重置预算。（**更正**：初版此处写的"better-sidebar 的 scope 只带 `sessionId`"是错的 —— 实际是 `{ sessionId, cwd }`，详见 v0.7.3。）
@@ -82,3 +118,9 @@ node tests/fence.test.mjs
 - **v0.6.0**：M5 分支写操作（切换/新建/检出，远程分支自动跟踪、未跟踪自动绑定默认远程同名、linkCurrent 会话参数）；页大小设置 UI + pluginSettings 接线；跨页泳道续接；启动体验（无会话提示 + 自动轮询）；pull/push 增强（`-u`/`--rebase`/ahead-behind）；git 认证交互；便携 git 自动部署。
 - **v0.5.0**：提交行右键「查看 diff」内联化；pull/push/fetch-all 同步（含 tag 推送/拉取、fetch-only）。
 - **v0.3.x**：泳道图 / 分支树 / 详情展开 / 多分支颜色（初版布局）。
+
+## 参考实现
+
+- VS Code Git 扩展的 askpass：`extensions/git/src/askpass.ts`（环境注入 `GIT_ASKPASS`/`VSCODE_GIT_ASKPASS_*`、无 IPC 时用 `askpassEmpty`、按 authority 缓存 60s、密码用掩码输入框）与 `extensions/git/src/askpass-main.ts`（助手经 IPC 取答案、写管道文件、失败 `fatal()` 退出 1）
+- git 官方：`gitcredentials(7)`（取凭据顺序 `GIT_ASKPASS` → `core.askPass` → `SSH_ASKPASS` → **终端提示**）、`git-credential(1)`（`fill`/`approve`/`reject` 协议）
+- 已知坑：microsoft/vscode#230033（askpass 并发/交错的用户名+密码请求）
