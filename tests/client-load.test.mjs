@@ -388,7 +388,18 @@ function makeFakeDom() {
       tagName: tag, children: [], className: '', textContent: '', style: {}, dataset: {},
       type: '', title: '', value: '', disabled: false, checked: false, rows: 0, placeholder: '',
       appendChild(c) { el.children.push(c); return c; },
-      insertBefore(c) { el.children.push(c); return c; },
+      // 与真实 DOM 一致：参照节点必须是本节点的子节点，否则抛 NotFoundError。
+      // （这条校验就是被真实事故逼出来的：insertBefore 用在未挂载的 btns 上，
+      //   浏览器抛错 → click 处理器静默中断 → 「点删除没反应」。）
+      insertBefore(c, ref) {
+        if (ref !== undefined && !el.children.includes(ref)) {
+          throw new Error("NotFoundError: insertBefore 的参照节点不是本节点的子节点");
+        }
+        el.children.push(c);
+        return c;
+      },
+      set innerHTML(v) { if (v === '') el.children.length = 0; },
+      get innerHTML() { return ''; },
       remove() {},
       classList: {
         add(cls) { if (!el.classList.contains(cls)) el.className = `${el.className} ${cls}`.trim(); },
@@ -480,4 +491,47 @@ test('删除 TAG：确认框接线（三重确认 + 可同时删远程 + 指定�
   // 管理面板把远程清单传给删除流程
   assert.match(src, /onDelete: \(tag, opts\) => doDeleteTag\(tag, opts\)/);
   assert.match(src, /onDelete\(selected, \{ remotes, defaultRemote: remoteSel\.value \}\)/);
+});
+
+test('删除 TAG（DOM 级）：真实删除流程必须真的弹出确认框，且三重确认门控正确', () => {
+  const dom = makeFakeDom();
+  const { exports } = loadBundle({ document: dom.document });
+  const { showConfirm, tagDeleteExtraControls } = exports.__internals;
+  const state = { alsoRemote: false, remoteSel: null };
+  let confirmed = 0;
+
+  // 与 doDeleteTag 完全同构的一次调用：3 个门控勾选项 + 「同时删除远程 TAG」附加控件
+  assert.doesNotThrow(() => showConfirm(
+    '删除 TAG', '危险操作…', '删除 TAG',
+    () => { confirmed += 1; },
+    [{ text: '勾1' }, { text: '勾2' }, { text: '勾3' }],
+    tagDeleteExtraControls({
+      remotes: [{ name: 'origin', url: 'git@x' }], defaultRemote: 'origin', state,
+    }),
+  ));
+
+  const body = dom.document.body;
+  const boxes = findNode(body, (n) => (n.className ?? '').includes('sgg-confirm') && n.tagName === 'div');
+  assert.ok(boxes.some((b) => b.classList.contains('sgg-confirm-wide')), '带附加控件时确认框应为宽版');
+  const checks = findNode(body, (n) => n.type === 'checkbox');
+  assert.equal(checks.length, 4, '3 个门控勾选 + 1 个「同时删除远程 TAG」');
+  assert.equal(findNode(body, (n) => n.tagName === 'select').length, 1);
+
+  const ok = findNode(body, (n) => (n.className ?? '').includes('sgg-confirm-danger'))[0];
+  assert.ok(ok, '应有危险确认按钮');
+  assert.equal(ok.disabled, true, '三重确认未勾满时按钮必须禁用');
+
+  // 「同时删除远程 TAG」不参与门控：勾它不会放行
+  const extra = checks[3];
+  extra.checked = true;
+  extra.onchange();
+  assert.equal(state.alsoRemote, true);
+  assert.equal(ok.disabled, true, '可选项不能替代三重确认');
+
+  // 勾满三项门控 → 按钮放行
+  for (const cb of checks.slice(0, 3)) { cb.checked = true; cb.onchange(); }
+  assert.equal(ok.disabled, false);
+  ok.onclick();
+  assert.equal(confirmed, 1, '确认后应执行删除回调');
+  assert.equal(state.alsoRemote, true, '「同时删除远程 TAG」的状态应被带出');
 });
