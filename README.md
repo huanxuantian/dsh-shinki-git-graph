@@ -2,7 +2,7 @@
 
 DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支树视图（类似 VS Code 的 Git Graph 扩展），支持写操作与远程同步。
 
-**当前版本：v0.8.0**（工作目录四级解析：活跃会话/磁盘会话头/工作区台账/成员资格校验过的 scope.cwd + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + **网页端 git 认证（GIT_ASKPASS 桥，绝不停留在终端）** + 便携 git 部署）
+**当前版本：v0.9.0**（工作目录四级解析 + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + 网页端 git 认证（GIT_ASKPASS 桥，绝不停留在终端） + 便携 git 部署 + **Git Extensions 风格的曲线分支树**）
 
 > ⚠ **版本号有两处，必须同步**：`package.json` 的 `version` 与 `lib/client.js` 的 `PLUGIN_VERSION`
 > （侧边栏角标显示的就是后者；浏览器半边读不到 package.json，所以是硬编码副本）。
@@ -96,20 +96,29 @@ dsh web 继承了控制终端时，提示被打进宿主控制台、git 阻塞�
 ## 测试
 
 ```sh
-node --test tests/            # node:test（沙箱受限环境可逐个文件直接运行）
-node tests/lanes.test.mjs
-node tests/git-service.test.mjs   # 需要真实 git（临时仓库）
-node tests/fence.test.mjs
+npm test                          # = node --test（自动发现 tests/*.test.mjs）
+node --test tests/lanes.test.mjs          # 泳道分配（旧入口兼容）
+node --test tests/graph-layout.test.mjs   # 泳道配色 / 曲线图元 / 压缩滑移 / 跨页续接
+node --test tests/client-load.test.mjs    # 浏览器半包加载 + 图谱行渲染冒烟
+node --test tests/client-inline.test.mjs  # 内联区与 lib/graph-layout.js 一致性
+node --test tests/git-service.test.mjs    # 需要真实 git（临时仓库；git < 2.28 会因 `init -b` 失败）
+node --test tests/fence.test.mjs
 ```
+
+图谱样式的**目视校验**（无需浏览器）：`node tests/graph-preview.mjs --png` 会把三组样例历史画成
+`/tmp/git-graph-preview.svg|png`（若装了 `rsvg-convert` 则顺带转 PNG）。
 
 ## 已知限制（初版）
 
 - 标签随 refs 徽标显示（`tag: x` → `x`），无单独开关。
+- 泳道间距按整页最宽行自适应（15 / 12 / 9 / 7 px），提交点半径随之缩小；图谱列宽度上限为行宽的
+  62%，泳道数极端多（> 25 条并存）时最右侧泳道会被裁掉（侧边栏宽度所限，优先保住提交标题）。
 - 仅 web profile。
 - pull/push 的 `--rebase` / `-u` 已支持；暂未支持交互式 rebase 与冲突解决 UI。
 
 ## 版本历史
 
+- **v0.9.0**：**分支树绘制重做（Git Extensions 风格）** —— 原实现每行只画一串等宽字形（`│ ● ◉`），分叉/合并表现为「某列突然变空格（线断了）」，配色还随列号轮换。现改为按 Git Extensions 的绘制模型出**图形图元**：① 分叉/合并处画 S 曲线斜插进节点（不再断线）；② 泳道**随身携带颜色**（分支全程同色，只有分叉处出现第二种颜色），跨页沿用同一配色；③ 泳道每行**压缩**（释放的空列即时移除，右侧泳道用滑移曲线平移过去），图谱宽度只取决于同时并存的分支数；④ 节点形状按 GE 规则：有 ref → 方块、HEAD → 多一圈描边（合并提交不额外变形，靠曲线表达）；⑤ 布局/配色/几何收敛为单一真源 `lib/graph-layout.js`（内联进 `client.js`，由单测守卫一致），并新增 `tests/graph-preview.mjs` 目视校验脚本。`assignLanes` 旧入口保留为兼容层。
 - **v0.8.0**：**网页端 git 认证（askpass 桥）**——修复 Linux 上「推送时凭据提示落到宿主控制台、git 阻塞把整机卡死」的事故：网络操作改 `GIT_TERMINAL_PROMPT=0` + 真正的 `GIT_ASKPASS` 助手（`lib/askpass.sh|.cmd` + `lib/askpass-main.mjs`，经回环 HTTP 送回浏览器对话框，每操作一次性令牌）；`pendingPrompts` 改为按提示 id 登记（支持一次操作问两次、避免交错）；如实上报凭据助手状态并在认证失败时 `credential reject`。参考 VS Code `extensions/git/src/askpass.ts|askpass-main.ts`。
 - **v0.7.3**：**cwd 提示（成员资格校验）+ 精确错误码**。① 更正认知并利用既有能力：better-sidebar 的面板 scope 是 `{ sessionId, cwd }`（cwd 取自客户端侧、磁盘来源的会话列表），其自身 host 端也是"校验成员资格后才把客户端 cwd 当命令 cwd 用"；本插件现把 `scope.cwd` 作为**提示**随请求上报，host 仅在它能 realpath 命中**自己台账里的某个工作区路径**时才采信，且**台账不可用即忽略**（fail closed）—— 于是"会话既没打开、台账也没索引到"的情况也能出图，而浏览器依旧无法把 git 指向任意目录。② 错误语义细分：会话存在但目录已消失/改名 → 404 `workspace-missing`（附具体路径，客户端显示错误而非无意义轮询）；会话确实找不到 → 仍 404 `session-not-found`（客户端走有界重试 + 提示）。
 - **v0.7.2**：**工作目录改为三级解析（修 A571 工作区打不开）**——原先只从 `ctx.sessions.get(sessionId)` 取 cwd，而那是**内存里"当前已打开"的会话表**：没打开的会话一律 404 `session-not-found`，于是同一仓库下 p507 正常、A571 一直失败。现按序回退：① 活跃会话 → ② 磁盘会话头（`sessionQuery.listSessions()`） → ③ 工作区台账（`workspaceRegistry.list()` 按 `sessionIds` 反查 `path`）；后两者用 `ctx.get()` 可选获取，缺失时优雅降级为原行为。仅回环客户端可达（trust fence 未变），路径仍全部由宿主推导。
@@ -120,6 +129,12 @@ node tests/fence.test.mjs
 - **v0.3.x**：泳道图 / 分支树 / 详情展开 / 多分支颜色（初版布局）。
 
 ## 参考实现
+
+- Git Extensions 的提交图绘制（本项目 v0.9.0 分支树样式的参考）：
+  `src/app/GitUI/UserControls/RevisionGrid/Graph/Rendering/{GraphRenderer,SegmentRenderer}.cs`
+  —— 泳道宽度 16 / 线宽 2 / 节点 10、每段「上一行-本行-下一行」三点几何、两端竖直时的贝塞尔配方、
+  有 ref → 方块与 HEAD 描边；`RevisionGraphLaneColor.cs` 的 7 色调色板与「颜色挂在段上」的稳定配色；
+  `docs/macos/reduced-graph-design.md` 的 reduced-graph 算法与「lane 压缩 / 滑移」说明。
 
 - VS Code Git 扩展的 askpass：`extensions/git/src/askpass.ts`（环境注入 `GIT_ASKPASS`/`VSCODE_GIT_ASKPASS_*`、无 IPC 时用 `askpassEmpty`、按 authority 缓存 60s、密码用掩码输入框）与 `extensions/git/src/askpass-main.ts`（助手经 IPC 取答案、写管道文件、失败 `fatal()` 退出 1）
 - git 官方：`gitcredentials(7)`（取凭据顺序 `GIT_ASKPASS` → `core.askPass` → `SSH_ASKPASS` → **终端提示**）、`git-credential(1)`（`fill`/`approve`/`reject` 协议）
