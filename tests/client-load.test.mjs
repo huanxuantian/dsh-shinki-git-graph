@@ -59,7 +59,7 @@ function texts(nodes) {
     .map((n) => n.children[0]);
 }
 
-function loadBundle() {
+function loadBundle(opts = {}) {
   const react = makeReactStub();
   const sandbox = {
     console,
@@ -68,7 +68,7 @@ function loadBundle() {
     setInterval,
     clearInterval,
     fetch: async () => { throw new Error('fetch 不应在加载/渲染期被调用'); },
-    document: {
+    document: opts.document ?? {
       getElementById: () => null,
       querySelector: () => null,
       createElement: () => ({ id: '', textContent: '', dataset: {} }),
@@ -379,4 +379,105 @@ test('TAG 功能接入：右键两项 + 三个对话框 + 三重确认删除', (
   assert.ok(src.includes("apiNetwork('tagDeleteRemote', { remote: extra.remoteSel.value, tag: tagName })"));
   // 创建后推送走 push（tag 形态）
   assert.ok(src.includes("apiNetwork('push', { remote, tag: name })"));
+});
+
+/** 极简可遍历 DOM（只实现被测代码用到的部分），用来在没有浏览器时驱动原生对话框控件。 */
+function makeFakeDom() {
+  const make = (tag) => {
+    const el = {
+      tagName: tag, children: [], className: '', textContent: '', style: {}, dataset: {},
+      type: '', title: '', value: '', disabled: false, checked: false, rows: 0, placeholder: '',
+      appendChild(c) { el.children.push(c); return c; },
+      insertBefore(c) { el.children.push(c); return c; },
+      remove() {},
+      classList: {
+        add(cls) { if (!el.classList.contains(cls)) el.className = `${el.className} ${cls}`.trim(); },
+        contains(cls) { return el.className.split(/\s+/).includes(cls); },
+      },
+    };
+    return el;
+  };
+  const document = {
+    createElement: make,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    getElementById: () => null,
+    head: make('head'),
+    body: make('body'),
+  };
+  return { document };
+}
+
+/** 深度优先查找（含 root 自身）。 */
+function findNode(root, pred, out = []) {
+  if (pred(root)) out.push(root);
+  for (const c of root.children ?? []) findNode(c, pred, out);
+  return out;
+}
+
+test('删除 TAG：确认框里必须有「同时删除远程 TAG」+ 远程选择，并且真的能联动', () => {
+  const dom = makeFakeDom();
+  const { exports } = loadBundle({ document: dom.document });
+  const state = { alsoRemote: false, remoteSel: null };
+  const build = exports.__internals.tagDeleteExtraControls({
+    remotes: [{ name: 'origin', url: 'git@example.com:a.git' }, { name: 'backup', url: 'git@example.com:b.git' }],
+    defaultRemote: 'backup',
+    state,
+  });
+  const box = dom.document.createElement('div');
+  build(box);
+
+  // 1) 复选框存在、可点、文案正确
+  const checks = findNode(box, (n) => n.type === 'checkbox');
+  assert.equal(checks.length, 1, '应有且仅有一个「同时删除远程 TAG」复选框');
+  const labelTexts = findNode(box, (n) => n.tagName === 'span').map((n) => n.textContent);
+  assert.ok(labelTexts.some((x) => /同时删除远程 TAG/.test(x)), `缺少选项文案：${labelTexts.join(' | ')}`);
+  assert.equal(checks[0].disabled, false);
+
+  // 2) 远程下拉存在、列出全部远程、默认选中指定远程、未勾选时不可改
+  const selects = findNode(box, (n) => n.tagName === 'select');
+  assert.equal(selects.length, 1);
+  const sel = selects[0];
+  assert.deepEqual(sel.children.map((o) => o.value), ['origin', 'backup']);
+  assert.equal(sel.value, 'backup');
+  assert.equal(sel.disabled, true, '未勾选时不允许改远程');
+  assert.equal(state.remoteSel, sel);
+
+  // 3) 勾选 → 状态写回 + 下拉解锁
+  checks[0].checked = true;
+  checks[0].onchange();
+  assert.equal(state.alsoRemote, true);
+  assert.equal(sel.disabled, false);
+  // 4) 取消勾选 → 状态回退（只删本地）
+  checks[0].checked = false;
+  checks[0].onchange();
+  assert.equal(state.alsoRemote, false);
+  assert.equal(sel.disabled, true);
+});
+
+test('删除 TAG：没有远程时选项仍在（置灰 + 说明），不会让用户以为功能缺失', () => {
+  const dom = makeFakeDom();
+  const { exports } = loadBundle({ document: dom.document });
+  const state = { alsoRemote: false, remoteSel: null };
+  const build = exports.__internals.tagDeleteExtraControls({ remotes: [], defaultRemote: '', state });
+  const box = dom.document.createElement('div');
+  build(box);
+
+  const checks = findNode(box, (n) => n.type === 'checkbox');
+  assert.equal(checks.length, 1, '没有远程时也应显示该选项');
+  assert.equal(checks[0].disabled, true);
+  const texts = findNode(box, (n) => typeof n.textContent === 'string' && n.textContent !== '').map((n) => n.textContent);
+  assert.ok(texts.some((t) => t.includes('未配置远程仓库')), `应给出「未配置远程」说明：${texts.join(' | ')}`);
+  assert.equal(state.alsoRemote, false);
+});
+
+test('删除 TAG：确认框接线（三重确认 + 可同时删远程 + 指定远程）', () => {
+  const src = readFileSync(CLIENT, 'utf8');
+  // doDeleteTag 必须使用该控件工厂，并在确认后按状态删远程
+  assert.match(src, /tagDeleteExtraControls\(\{ remotes, defaultRemote, state: extra \}\)/);
+  assert.match(src, /if \(extra\.alsoRemote && extra\.remoteSel\?\.value\)/);
+  assert.match(src, /apiNetwork\('tagDeleteRemote', \{ remote: extra\.remoteSel\.value, tag: tagName \}\)/);
+  // 管理面板把远程清单传给删除流程
+  assert.match(src, /onDelete: \(tag, opts\) => doDeleteTag\(tag, opts\)/);
+  assert.match(src, /onDelete\(selected, \{ remotes, defaultRemote: remoteSel\.value \}\)/);
 });
