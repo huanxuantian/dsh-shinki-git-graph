@@ -33,6 +33,7 @@ const ICON = {
   branch: 'M4 2v12M4 4.5h3.2a1.8 1.8 0 0 1 1.8 1.8v1.4a1.8 1.8 0 0 0 1.8 1.8H14',
   remote: 'M4.9 12.4h6.2a2.5 2.5 0 0 0 .3-5 3.5 3.5 0 0 0-6.7-.6 2.8 2.8 0 0 0 .2 5.6z',
   tag: 'M2.6 7.7V3.5a.9.9 0 0 1 .9-.9h4.2l5.7 5.7a1 1 0 0 1 0 1.4l-3.3 3.3a1 1 0 0 1-1.4 0L2.9 8.6a.9.9 0 0 1-.3-.9zM5.4 5.4h.01',
+  tagOff: 'M2.6 7.7V3.5a.9.9 0 0 1 .9-.9h4.2l5.7 5.7a1 1 0 0 1 0 1.4l-3.3 3.3a1 1 0 0 1-1.4 0L2.9 8.6a.9.9 0 0 1-.3-.9zM5.4 5.4h.01M2.2 13.8 13.8 2.2',
 };
 
 /** 主题表：色值与 client.js 的 `--sgg-*` token 一致（浅色挂 :root、深色挂 body[data-ds-dark-theme]）。
@@ -177,6 +178,28 @@ function renderSample(sample, theme, topY) {
   return { body: parts.join('\n'), height };
 }
 
+/** 头部「显示标签」开关的开/关对照（v0.10.0 修过：emoji 图标 + 中性色 token 导致看不出状态）。
+ *  画法与 client.js 的 ToggleIconButton 一致：开=主题色底 + 描边 + 标签图标；关=无底 + 带斜杠图标。 */
+function renderToggleStrip(theme, topY) {
+  const t = THEMES[theme];
+  const parts = [`<g transform="translate(0,${topY})">`];
+  parts.push(`<text x="8" y="16" fill="${t.muted}" font-size="11">「显示标签」开关状态对照（左：开；右：关）—— 状态由图标 + 底色 + title(aria-pressed) 三重表达</text>`);
+  const btn = (x, on) => {
+    const y = 26;
+    const bg = on ? `fill="${t.ref.bg[0]}" fill-opacity="${t.ref.bg[1]}" stroke="${t.ref.line[0]}" stroke-opacity="${t.ref.line[1]}"` : `fill="none" stroke="none"`;
+    const fg = on ? t.ref.fg : t.muted;
+    return [
+      `<rect x="${x}" y="${y}" width="22" height="22" rx="6" ${bg} stroke-width="1"/>`,
+      `<g transform="translate(${x + 3},${y + 3}) scale(1)" fill="none" stroke="${fg}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="${on ? ICON.tag : ICON.tagOff}"/></g>`,
+      `<text x="${x + 28}" y="${y + 15}" fill="${t.muted}" font-size="10.5">${on ? 'aria-pressed=true' : 'aria-pressed=false'}</text>`,
+    ].join('');
+  };
+  parts.push(btn(8, true));
+  parts.push(btn(150, false));
+  parts.push('</g>');
+  return { body: parts.join('\n'), height: 56 };
+}
+
 function renderTheme(theme) {
   const t = THEMES[theme];
   let offset = 0;
@@ -185,6 +208,11 @@ function renderTheme(theme) {
     const { body, height } = renderSample(sample, theme, offset);
     bodies.push(body);
     offset += height + 14;
+  }
+  {
+    const strip = renderToggleStrip(theme, offset);
+    bodies.push(strip.body);
+    offset += strip.height + 10;
   }
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${offset}" viewBox="0 0 ${WIDTH} ${offset}" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">`,

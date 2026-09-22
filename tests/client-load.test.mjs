@@ -288,8 +288,8 @@ test('ref 徽标：本地分支 / 远程分支 / 标签各有图标（类型不�
 test('预览脚本的徽标图标与 client.js 保持一致（漂移守卫）', () => {
   const client = readFileSync(CLIENT, 'utf8');
   const preview = readFileSync(join(CLIENT, '..', '..', 'tests', 'graph-preview.mjs'), 'utf8');
-  const icons = [...preview.matchAll(/^\s+(?:branch|remote|tag): '([^']+)',$/gm)].map((m) => m[1]);
-  assert.equal(icons.length, 3, '应为 branch/remote/tag 三条图标路径');
+  const icons = [...preview.matchAll(/^\s+(?:branch|remote|tag|tagOff): '([^']+)',$/gm)].map((m) => m[1]);
+  assert.equal(icons.length, 4, '应为 branch/remote/tag/tagOff 四条图标路径');
   for (const d of icons) assert.ok(client.includes(d), `预览图标与 client.js 不一致：${d.slice(0, 24)}…`);
 });
 
@@ -302,4 +302,81 @@ test('CSS 注入：热更后必须按新内容覆写（不能只按 <style> 已�
   assert.match(body[1], /style\.textContent = CSS/);
   assert.equal(/if \(document\.querySelector\('style\[data-dsh-plugin=[^)]*\)\) return;/.test(body[1]), false,
     'injectCss 不应在 <style> 已存在时直接 return');
+});
+
+/** 渲染树里找某个 type 的宿主节点。 */
+const hostsOf = (nodes, type) => nodes.filter((n) => n.type === type);
+
+test('开关按钮：开/关状态必须能被看出来（图标 + aria-pressed + 视觉 class）', () => {
+  const { exports } = loadBundle();
+  const { ToggleIconButton } = exports.__internals;
+  const onIcon = 'M1 1h4';   // 假图标：只关心「开关换了图标」
+  const offIcon = 'M9 9h2';
+  const IconOn = () => null;
+  const IconOff = () => null;
+
+  const onTree = flatten(render(ToggleIconButton({
+    on: true, title: '显示标签', IconOn, IconOff, onClick: () => {},
+  })));
+  const onBtn = hostsOf(onTree, 'button')[0];
+  assert.match(onBtn.props.className, /sgg-iconbtn-on/, '开态要有按下样式类');
+  assert.equal(onBtn.props['aria-pressed'], 'true');
+  assert.match(onBtn.props.title, /（开）$/, 'title 必须写明当前状态');
+  assert.equal(onBtn.props['aria-label'], '显示标签');
+
+  const offTree = flatten(render(ToggleIconButton({
+    on: false, title: '显示标签', IconOn, IconOff, onClick: () => {},
+  })));
+  const offBtn = hostsOf(offTree, 'button')[0];
+  assert.equal(/sgg-iconbtn-on/.test(offBtn.props.className), false);
+  assert.equal(offBtn.props['aria-pressed'], 'false');
+  assert.match(offBtn.props.title, /（关）$/);
+
+  // 开/关必须是两枚不同图标（不能只靠颜色区分）
+  assert.notEqual(onIcon, offIcon);
+  const src = readFileSync(CLIENT, 'utf8');
+  assert.match(src, /IconTagOffOutline16:/, '应存在「标签关闭态」图标');
+  assert.match(src, /IconOn: primitives\.IconTagOutline16,[\s\S]{0,120}IconOff: primitives\.IconTagOffOutline16/,
+    '显示标签按钮应切换两枚图标');
+});
+
+test('开关按钮：不能用 emoji 图标、也不能用中性色 token 表示「开」', () => {
+  const src = readFileSync(CLIENT, 'utf8');
+  // emoji 不继承 color，会让状态反馈完全失效（v0.9.1 实测问题）
+  assert.equal(src.includes("'🏷'"), false, '“显示标签”按钮不应再用 emoji');
+  // brand-primary 在默认主题里是中性前景色，做高亮等于没有高亮
+  assert.equal(/style: \w+ \? \{ color: 'var\(--dsw-alias-brand-primary/.test(src), false,
+    '开关态不应使用 --dsw-alias-brand-primary');
+  // 按下态样式应使用随主题走的标签 token
+  const decls = cssDecls('.sgg-iconbtn-on');
+  assert.match(decls.background, /var\(--sgg-ref-bg\)/);
+  assert.match(decls.color, /var\(--sgg-ref-fg\)/);
+});
+
+test('TAG 功能接入：右键两项 + 三个对话框 + 三重确认删除', () => {
+  const src = readFileSync(CLIENT, 'utf8');
+  // 右键菜单两项
+  assert.match(src, /label: t\('createTagHere'\), onClick: \(\) => openCreateTag\(pos\.row\.oid\)/);
+  assert.match(src, /label: t\('manageTags'\), onClick: \(\) => openManageTags\(\)/);
+  // 三个对话框/流程
+  for (const fn of ['function showCreateTagDialog', 'function showManageTagsDialog', 'const doDeleteTag']) {
+    assert.ok(src.includes(fn), `缺少 ${fn}`);
+  }
+  // 创建对话框：带注释 / 带签名 / 同时推送（+ 远程选择）
+  for (const key of ['tagAnnotate', 'tagSign', 'tagAlsoPush', 'tagPushTo']) {
+    assert.ok(src.includes(`t('${key}')`), `创建对话框缺少 ${key}`);
+  }
+  // 管理对话框：推送 / 删除 / 拉取远程 / 远程已有标记
+  for (const key of ['tagPushSelected', 'tagDeleteSelected', 'tagFetchRemote', 'tagRemoteHas', 'tagRemoteMissing']) {
+    assert.ok(src.includes(`t('${key}')`), `管理对话框缺少 ${key}`);
+  }
+  // 删除 = 三重确认 + 可选同时删远程（并指定远程）
+  assert.match(src, /tagDeleteCheck1[\s\S]{0,200}tagDeleteCheck2[\s\S]{0,200}tagDeleteCheck3/,
+    '删除 TAG 必须三重确认');
+  assert.ok(src.includes("t('tagDeleteAlsoRemote')") && src.includes("t('tagDeleteRemotePick')"));
+  // 危险的删除必须走 tagDelete；远程删除必须走 tagDeleteRemote（网络 + 凭据桥）
+  assert.ok(src.includes("api('tagDelete', { tag: tagName })"));
+  assert.ok(src.includes("apiNetwork('tagDeleteRemote', { remote: extra.remoteSel.value, tag: tagName })"));
+  // 创建后推送走 push（tag 形态）
+  assert.ok(src.includes("apiNetwork('push', { remote, tag: name })"));
 });

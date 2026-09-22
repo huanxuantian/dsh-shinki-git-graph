@@ -2,7 +2,7 @@
 
 DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支树视图（类似 VS Code 的 Git Graph 扩展），支持写操作与远程同步。
 
-**当前版本：v0.9.1**（工作目录四级解析 + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + 网页端 git 认证（GIT_ASKPASS 桥，绝不停留在终端） + 便携 git 部署 + Git Extensions 风格的曲线分支树 + **浅色/深色主题各自配色、分支/远程/标签徽标带图标**）
+**当前版本：v0.10.0**（工作目录四级解析 + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + 网页端 git 认证（GIT_ASKPASS 桥，绝不停留在终端） + 便携 git 部署 + Git Extensions 风格的曲线分支树 + 浅色/深色主题各自配色、分支/远程/标签徽标带图标 + **TAG 创建/管理：注释、GPG 签名、创建后推送、远程 TAG 拉取、三重确认删除**）
 
 > ⚠ **版本号有两处，必须同步**：`package.json` 的 `version` 与 `lib/client.js` 的 `PLUGIN_VERSION`
 > （侧边栏角标显示的就是后者；浏览器半边读不到 package.json，所以是硬编码副本）。
@@ -89,7 +89,7 @@ dsh web 继承了控制终端时，提示被打进宿主控制台、git 阻塞�
 - **host 半区**（`lib/index.js`，Node）：git 数据服务 + `POST /shinki-git/api` 路由。
   - 数据：`init` / `branches`（本地+远程+上游映射）/ `graph`（`git log --parents` 拓扑，revs 白名单防注入，skip/limit 分页）/ `commit`（元信息 + numstat + diff）/ `status` / `diff` / `stage` / `unstage` / `discard` / `wcommit`。
   - 分支写操作：`checkout`（切换，白名单 + 存在性校验，当前分支返回 unchanged；远程分支本地无同名时 `--track` 自动建跟踪分支）/ `createBranch`（新建，重名拒绝，base 可为本地/远程分支或 hash，远程 base 自动 `--track` 设上游）/ `checkoutCommit`（detached 检出，hash 正则校验）。
-  - 同步：`remotes`（`git remote -v`）/ `tags`（`for-each-ref refs/tags`）/ `push`（`git push [-u]` 分支或 `git push <remote> tag <tag>`）/ `pull`（`git pull [--rebase]` 分支，`fetchOnly` 时仅 `git fetch`；`tag` 时仅 fetch）/ `fetchAll`（`git fetch --all --prune`）；远程名/分支名/标签名白名单校验，branch 与 tag 二选一，网络操作 120s 超时；**认证**：`onPrompt` 凭据提示桥接（`prompt-poll`/`prompt-answer`）+ SSH BatchMode + 认证失败友好映射。
+  - 同步：`remotes`（`git remote -v`）/ `tags`（`for-each-ref refs/tags`）/ `push`（`git push [-u]` 分支或 `git push <remote> tag <tag>`）/ `pull`（`git pull [--rebase]` 分支，`fetchOnly` 时仅 `git fetch`；`tag` 时仅 fetch）/ `fetchAll`（`git fetch --all --prune`）；**TAG**：`tagCreate`（`git tag --no-sign|-a -m|-s -m`，注释/签名必须有消息，否则 git 会开编辑器卡住；轻量 TAG 显式 `--no-sign` 以免 `tag.gpgSign=true` 时被意外签名）/ `tagDelete`（`git tag -d`，危险，UI 三重确认）/ `tagDeleteRemote`（`git push --delete <remote> refs/tags/<tag>`，**先 ls-remote 确认远程确有该 TAG** —— `push --delete` 删不存在的远端 ref 也返回 0）/ `tagsFetch`（`git fetch [<remote>|--all] --tags`，不 prune）/ `tagsRemote`（`git ls-remote --tags`）；远程名/分支名/标签名白名单校验，branch 与 tag 二选一，网络操作 120s 超时；**认证**：`onPrompt` 凭据提示桥接（`prompt-poll`/`prompt-answer`）+ SSH BatchMode + 认证失败友好映射。
   - 安全：回环 socket + Host/`--trusted-host` 围栏（`lib/trust-fence.js`）；仓库路径仅从会话 cwd 解析，绝不信任客户端传入路径；git 逐条 spawn（无 shell）+ 超时 + 输出上限。
 - **browser 半区**（`lib/client.js`）：通过 `window.__ModuleLoader__` 加载，注册侧边栏 Tab（`ctx.betterSidebar.registerTab`），渲染分支树 + 泳道提交图 + 展开详情 + 写操作/同步/认证对话框。泳道算法与官方 git-graph 插件一致（`lib/lanes.js`，client 内有内联副本，需同步）。
 
@@ -126,6 +126,7 @@ node --test tests/fence.test.mjs
 ## 已知限制（初版）
 
 - 标签随 refs 徽标显示（`tag: x` → `x`），无单独开关。
+- TAG 签名（`-s`）需要本机已配置 GPG 密钥；没有密钥时 git 直接报错（不会卡住，10s 超时兜底）。
 - 泳道间距按整页最宽行自适应（15 / 12 / 9 / 7 px），提交点半径随之缩小；图谱列宽度上限为行宽的
   62%，超过时整幅图**等比挤压**（所有泳道都还在，节点略呈椭圆）——侧边栏宽度所限，优先保住提交标题。
 - 仅 web profile。
@@ -133,6 +134,7 @@ node --test tests/fence.test.mjs
 
 ## 版本历史
 
+- **v0.10.0**：**TAG 功能** —— 提交右键新增「在此创建 TAG」与「管理 TAG…」：① 创建对话框填名称，可选**带注释（-a）**（必填消息）、**带 GPG 签名（-s，隐含注释）**，并可勾选**同时推送到远程**（选择远程，创建成功后立即推送；推送失败会明确提示「TAG 已创建，但推送失败」）；② 管理对话框选一个 TAG 做**推送**/**删除**，可**拉取远程 TAG**（单远程或全部远程），并标出每个 TAG「远程已有 / 未推送」；③ **删除是危险操作**：三重勾选确认后才可执行，并可勾选**同时删除对应远程 TAG**（多远程时指定远程）。host 侧新增 `tagCreate / tagDelete / tagDeleteRemote / tagsFetch / tagsRemote`，`tags()` 带上 `annotated/target/date`。**修复**「显示标签」开关看不出状态：原按钮是 emoji 图标（不继承 `color`）+ `--dsw-alias-brand-primary`（默认主题里是中性前景色，等于没高亮）→ 改为 `ToggleIconButton`：开/关两枚不同图标（标签 / 斜杠标签）+ 主题色按下态（`--sgg-ref-*`）+ `aria-pressed` + title 标注「开/关」；「显示整个仓库」开关同样处理。
 - **v0.9.1**：**主题适配 + 分支/标签徽标重做** —— v0.9.0 的配色只有一套深色专用亮色，浅色主题下泳道线在 #f9fafb 上仅 1.47~2.94:1（低于 WCAG 图形要求 3:1，绿色/浅蓝几乎看不见），ref 徽标文字 <2.3:1。现所有颜色收敛为 `--sgg-*` token（浅色挂 `:root`、深色挂宿主主题开关 `body[data-ds-dark-theme]`），泳道线/分支树圆点/节点填充/徽标/diff 全部随主题切换；徽标改为**图标 + 描边 + 省略号**：本地分支=分支图标、远程分支=云图标、标签=标签牌图标（类型不再只靠颜色区分，远程判定查宿主远程分支清单而非「名字带斜杠」）。新增 `tests/theme.test.mjs` 按 WCAG 断言对比度（泳道 ≥3:1、文本 ≥4.5:1、两主题 token 集合一致），预览脚本改为同时产出深浅两套。
 - **v0.9.0**：**分支树绘制重做（Git Extensions 风格）** —— 原实现每行只画一串等宽字形（`│ ● ◉`），分叉/合并表现为「某列突然变空格（线断了）」，配色还随列号轮换。现改为按 Git Extensions 的绘制模型出**图形图元**：① 分叉/合并处画 S 曲线斜插进节点（不再断线）；② 泳道**随身携带颜色**（分支全程同色，只有分叉处出现第二种颜色），跨页沿用同一配色；③ 泳道每行**压缩**（释放的空列即时移除，右侧泳道用滑移曲线平移过去），图谱宽度只取决于同时并存的分支数；④ 节点形状按 GE 规则：有 ref → 方块、HEAD → 多一圈描边（合并提交不额外变形，靠曲线表达）；⑤ 布局/配色/几何收敛为单一真源 `lib/graph-layout.js`（内联进 `client.js`，由单测守卫一致），并新增 `tests/graph-preview.mjs` 目视校验脚本。`assignLanes` 旧入口保留为兼容层。
 - **v0.8.0**：**网页端 git 认证（askpass 桥）**——修复 Linux 上「推送时凭据提示落到宿主控制台、git 阻塞把整机卡死」的事故：网络操作改 `GIT_TERMINAL_PROMPT=0` + 真正的 `GIT_ASKPASS` 助手（`lib/askpass.sh|.cmd` + `lib/askpass-main.mjs`，经回环 HTTP 送回浏览器对话框，每操作一次性令牌）；`pendingPrompts` 改为按提示 id 登记（支持一次操作问两次、避免交错）；如实上报凭据助手状态并在认证失败时 `credential reject`。参考 VS Code `extensions/git/src/askpass.ts|askpass-main.ts`。
