@@ -198,3 +198,57 @@ test('每行泳道数与整页宽度：压缩后不因历史高水位永久变�
   // 末行（C）时 A/B 已释放：C 所在的泳道被压缩回第 0 列
   assert.equal(l.rows[3].node.col, 0);
 });
+
+/** 若干条样例历史：覆盖线性、分叉、合并、章鱼、压缩滑移、跨页续接。 */
+const SAMPLES = [
+  [{ oid: 'c3', parents: ['c2'] }, { oid: 'c2', parents: ['c1'] }, { oid: 'c1', parents: [] }],
+  [{ oid: 'c3', parents: ['c1'] }, { oid: 'c2', parents: ['c1'] }, { oid: 'c1', parents: [] }],
+  [
+    { oid: 'M', parents: ['A', 'B'] }, { oid: 'B', parents: ['base'] },
+    { oid: 'A', parents: ['base'] }, { oid: 'base', parents: [] },
+  ],
+  [
+    { oid: 'M', parents: ['A', 'B', 'C'] }, { oid: 'A', parents: [] },
+    { oid: 'B', parents: [] }, { oid: 'C', parents: [] },
+  ],
+  [
+    { oid: 'a', parents: ['base'] }, { oid: 'b', parents: ['base', 'X'] },
+    { oid: 'base', parents: [] },
+  ],
+  [
+    { oid: 'r1', parents: ['r2', 'r3'] }, { oid: 'r2', parents: ['r4'] },
+    { oid: 'r3', parents: ['r4', 'r5'] }, { oid: 'r4', parents: ['r6'] },
+    { oid: 'r5', parents: ['r6'] }, { oid: 'r6', parents: [] },
+  ],
+];
+
+test('跨行接缝：上一行下段的落点列 == 下一行上段的起点列（列不等就会断线）', () => {
+  for (const rows of SAMPLES) {
+    const l = layoutGraph(rows);
+    for (let i = 0; i + 1 < l.rows.length; i += 1) {
+      const bottom = l.rows[i].bottom.map((p) => p.toCol).sort((a, b) => a - b);
+      const top = l.rows[i + 1].top.map((p) => p.col).sort((a, b) => a - b);
+      assert.deepEqual(bottom, top, `第 ${i} 行底部与第 ${i + 1} 行顶部对不上：${bottom} vs ${top}`);
+      // 同一列的 x 必须一致（laneW 全局统一），否则线会左右错开
+      for (const p of l.rows[i].bottom) {
+        const q = l.rows[i + 1].top.find((t) => t.col === p.toCol);
+        assert.equal(laneX(p.toCol, W), laneX(q.col, W));
+      }
+    }
+  }
+});
+
+test('跨页接缝：上一页 tail 的列 == 下一页首行上段的列（配色/列号都续接）', () => {
+  const page1 = layoutGraph([{ oid: 'm', parents: ['A', 'B', 'C'] }]);
+  const page2 = layoutGraph(
+    [{ oid: 'A', parents: [] }, { oid: 'B', parents: [] }, { oid: 'C', parents: [] }],
+    { lanes: page1.lanes, colors: page1.colors },
+  );
+  const bottom = page1.rows[0].bottom.map((p) => p.toCol).sort((a, b) => a - b);
+  const top = page2.rows[0].top.map((p) => p.col).sort((a, b) => a - b);
+  assert.deepEqual(bottom, top, '下一页首行的上段列必须接上上一页的 tail 列');
+  // 首行（A）的节点、以及未消费泳道（B/C）的颜色都沿用上一页的分配
+  assert.equal(page2.rows[0].node.color, page1.colors[0]);
+  assert.deepEqual(page2.rows[0].bottom.map((p) => p.color), [page1.colors[1], page1.colors[2]]);
+  assert.deepEqual(page2.rows[0].colorOf, [page1.colors[1], page1.colors[2]], '未消费泳道的颜色跨页保持');
+});

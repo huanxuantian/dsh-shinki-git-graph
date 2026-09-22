@@ -149,8 +149,15 @@ test('client bundle：图谱行真实渲染出上下两层 SVG、曲线、节点
   assert.equal(svgs.length, 2, '应有上下两层 SVG');
   assert.equal(svgs[0].props.className, 'sgg-graph-down');
   assert.equal(svgs[1].props.className, 'sgg-graph-up');
-  // 上层 viewBox 与节点层一致（1:1，圆不会被拉扁）
-  assert.equal(svgs[1].props.viewBox, `0 0 ${layout.laneCount * laneW} 12`);
+  // 上下两层必须**共享同一个 x 映射**（都 width:100% + preserveAspectRatio=none），
+  // 否则 max-width 收窄行宽时会出现「线在左、节点在右」的错位（v0.9.0 首版踩过）。
+  assert.equal(svgs[0].props.width, '100%');
+  assert.equal(svgs[1].props.width, '100%');
+  assert.equal(svgs[0].props.preserveAspectRatio, 'none');
+  assert.equal(svgs[1].props.preserveAspectRatio, 'none');
+  // 上层 viewBox 高 = NODE_Y 且 height 恒为 NODE_Y 像素 → y 仍 1:1，圆不会被拉扁
+  assert.equal(svgs[1].props.viewBox, `0 0 ${layout.laneCount * laneW} ${exports.__internals.NODE_Y}`);
+  assert.equal(svgs[1].props.height, exports.__internals.NODE_Y);
 
   const paths = nodes.filter((n) => n.type === 'path');
   assert.equal(paths.length, 2, '上半段：节点自身泳道 + 一条汇入曲线');
@@ -193,4 +200,45 @@ test('client bundle：refs 为空 & 非 HEAD → 圆形节点、无描边；bran
   assert.equal(nodes.filter((n) => n.type === 'rect').length, 0, '空 refs 不应有方块/描边');
   // 没有父提交 → 下半段为空
   assert.equal(nodes.filter((n) => n.type === 'path').length, 0);
+});
+
+/** 从 client.js 里取出 CSS 模板与单条规则的声明（只处理 `sel{...}` 这种简单形式）。 */
+function cssDecls(selector) {
+  const code = readFileSync(CLIENT, 'utf8');
+  const css = /const CSS = `([\s\S]*?)`;/.exec(code);
+  assert.ok(css, 'client.js 应包含 CSS 模板字符串');
+  const rule = new RegExp(`(^|\\n)\\s*\\${selector}\\{([^}]*)\\}`).exec(css[1]);
+  assert.ok(rule, `CSS 里找不到规则 ${selector}`);
+  const out = {};
+  for (const part of rule[2].split(';')) {
+    const i = part.indexOf(':');
+    if (i === -1) continue;
+    out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+  }
+  return out;
+}
+
+test('CSS 契约：图谱列必须贯穿整行（否则相邻提交之间会断线 ~6px）', () => {
+  const { exports } = loadBundle();
+  const { NODE_Y } = exports.__internals;
+  // 竖直内边距必须挂在 .sgg-main 上：.sgg-row 一旦有上下 padding，图谱列（align-self:stretch
+  // 只能撑到 content box）就会被夹住 → 每两行之间 6px 断线。这条测试锁死该不变量。
+  const row = cssDecls('.sgg-row');
+  assert.equal(row.padding, '0 8px', '.sgg-row 不能有竖直内边距（图谱列要贯穿整行）');
+  assert.equal(row['padding-top'], undefined);
+  assert.equal(row['padding-bottom'], undefined);
+  const main = cssDecls('.sgg-main');
+  assert.equal(main.padding, '3px 0', '行的竖直内边距应放在 .sgg-main 上（保持文字间距不变）');
+  // 图谱列撑满行高，且上下两层在 NODE_Y 处**精确对接**（x 比例同为 1:1）
+  assert.equal(cssDecls('.sgg-graph')['align-self'], 'stretch');
+  assert.equal(cssDecls('.sgg-graph-up').top, '0');
+  assert.equal(cssDecls('.sgg-graph-down').top, `${NODE_Y}px`, '下层必须正好从节点所在行高开始');
+  assert.equal(cssDecls('.sgg-graph-down').height, `calc(100% - ${NODE_Y}px)`, '下层高度应为 100% - NODE_Y');
+  assert.equal(cssDecls('.sgg-graph-down')['view-box'], undefined); // viewBox 由属性给，不在 CSS 里
+  // 不能裁剪图谱列：圆头线帽各向外伸 1px，正好跨过行边界糊住接缝
+  // （小数设备像素下若不重叠，两行之间可能露出一条亮缝）。
+  assert.equal(cssDecls('.sgg-graph').overflow, undefined, '.sgg-graph 不应裁剪（否则行间缝被切断）');
+  assert.equal(cssDecls('.sgg-graph-up').overflow, 'visible');
+  assert.equal(cssDecls('.sgg-graph-down').overflow, 'visible');
+  assert.equal(cssDecls('.sgg-graph path')['stroke-linecap'], 'round', '圆头线帽是接缝重叠的保证');
 });

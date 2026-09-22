@@ -11,6 +11,9 @@
  *
  * 与 client.js 的对应关系：
  *   · 每个提交行高 ROW_H，节点画在行内 NODE_Y 处（= 首行文字中心）；
+ *   · **图谱带从行顶贯穿到行底**（这是硬约束：`.sgg-row` 不得有竖直内边距，行的上下
+ *     3px 内边距挂在 `.sgg-main` 上）—— 否则相邻两行之间会出现 ~6px 断线；
+ *     本预览按该契约绘制（行首文字仍在行顶 +3px），所以能在无浏览器时看出接缝问题；
  *   · top[] = 上半段（上一行下来的直通线 + 汇入曲线），bottom[] = 下半段
  *     （向下的直通线 + 扇出曲线 + 泳道左移滑移曲线）；
  *   · 节点形状遵循 GE 规则：有 ref → 方块，HEAD → 多一圈描边。
@@ -97,8 +100,9 @@ function renderSample(sample, topY) {
   layout.rows.forEach((lane, i) => {
     const y0 = i * ROW_H_PX;
     const shift = (p, dy) => ({ ...p, y0: p.y0 + dy, y1: p.y1 + dy });
-    // 行背景微条纹，便于看清行边界
+    // 行背景微条纹 + 行边界虚线：用来肉眼确认「图谱带贯穿整行、线跨行不断」
     if (i % 2 === 1) parts.push(`<rect x="0" y="${y0}" width="${width}" height="${ROW_H_PX}" fill="#ffffff08"/>`);
+    if (i > 0) parts.push(`<line x1="0" y1="${y0}" x2="${width}" y2="${y0}" stroke="#ffffff18" stroke-width="1"/>`);
     for (const p of lane.bottom) {
       const q = shift(p, y0);
       parts.push(`<path d="${primPath(q, laneW)}" fill="none" stroke="${p.color}" stroke-width="2" stroke-linecap="round" transform="translate(${LANE_LEFT},0)"/>`);
