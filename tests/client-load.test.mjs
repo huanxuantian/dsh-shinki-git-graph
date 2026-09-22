@@ -12,6 +12,8 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { cssDecls } from './css-tokens.mjs';
+
 const CLIENT = join(dirname(fileURLToPath(import.meta.url)), '..', 'lib', 'client.js');
 
 /** 极简 React 替身：createElement 造树，钩子返回稳定初值，effect 不执行。 */
@@ -162,7 +164,8 @@ test('client bundle：图谱行真实渲染出上下两层 SVG、曲线、节点
   const paths = nodes.filter((n) => n.type === 'path');
   assert.equal(paths.length, 2, '上半段：节点自身泳道 + 一条汇入曲线');
   assert.ok(paths.some((p) => p.props.d.includes('C')), '应有 S 曲线');
-  assert.ok(paths.every((p) => typeof p.props.stroke === 'string' && p.props.stroke.startsWith('#')));
+  // 颜色必须是主题 token（var(--sgg-lane-N)）或具体色值；两条线不同色（分叉可辨）
+  assert.ok(paths.every((p) => /^(#|var\(--sgg-lane-\d\))$/.test(p.props.stroke)));
   assert.equal(new Set(paths.map((p) => p.props.stroke)).size, 2, '两条线颜色必须不同（分叉可辨）');
   const circles = nodes.filter((n) => n.type === 'circle');
   assert.equal(circles.length, 1, '无 refs 的节点是圆点');
@@ -202,22 +205,6 @@ test('client bundle：refs 为空 & 非 HEAD → 圆形节点、无描边；bran
   assert.equal(nodes.filter((n) => n.type === 'path').length, 0);
 });
 
-/** 从 client.js 里取出 CSS 模板与单条规则的声明（只处理 `sel{...}` 这种简单形式）。 */
-function cssDecls(selector) {
-  const code = readFileSync(CLIENT, 'utf8');
-  const css = /const CSS = `([\s\S]*?)`;/.exec(code);
-  assert.ok(css, 'client.js 应包含 CSS 模板字符串');
-  const rule = new RegExp(`(^|\\n)\\s*\\${selector}\\{([^}]*)\\}`).exec(css[1]);
-  assert.ok(rule, `CSS 里找不到规则 ${selector}`);
-  const out = {};
-  for (const part of rule[2].split(';')) {
-    const i = part.indexOf(':');
-    if (i === -1) continue;
-    out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
-  }
-  return out;
-}
-
 test('CSS 契约：图谱列必须贯穿整行（否则相邻提交之间会断线 ~6px）', () => {
   const { exports } = loadBundle();
   const { NODE_Y } = exports.__internals;
@@ -241,4 +228,78 @@ test('CSS 契约：图谱列必须贯穿整行（否则相邻提交之间会断�
   assert.equal(cssDecls('.sgg-graph-up').overflow, 'visible');
   assert.equal(cssDecls('.sgg-graph-down').overflow, 'visible');
   assert.equal(cssDecls('.sgg-graph path')['stroke-linecap'], 'round', '圆头线帽是接缝重叠的保证');
+});
+
+/** 在渲染树里按徽标上的名字找那个徽标节点。 */
+function chipNamed(nodes, name) {
+  return nodes.find((n) => typeof n.props.className === 'string'
+    && /^sgg-ref($|\s)/.test(n.props.className)
+    && flatten(n.children).some((c) => c.children?.[0] === name));
+}
+
+test('ref 徽标：本地分支 / 远程分支 / 标签各有图标（类型不能只靠颜色区分）', () => {
+  const { exports } = loadBundle();
+  const { GraphRow, layoutGraph } = exports.__internals;
+  const rows = [{
+    oid: 'r1', parents: [], subject: 'chore: 版本号',
+    refs: 'HEAD -> main, origin/main, tag: v0.9.0',
+    author: 'a', date: '2026-01-01T00:00:00+08:00',
+  }];
+  const layout = layoutGraph(rows);
+  const nodes = flatten(render(GraphRow({
+    row: rows[0], lane: layout.rows[0], laneW: 15, radius: 4, branch: 'main', open: false,
+    onToggle: () => {}, onContextMenu: () => {}, branchColor: null, showTags: true,
+    remoteRefs: new Set(['origin/main']),
+  })));
+
+  const chips = nodes.filter((n) => typeof n.props.className === 'string' && /^sgg-ref($|\s)/.test(n.props.className));
+  assert.deepEqual(chips.map((c) => c.props.title).sort(), ['main', 'origin/main', 'v0.9.0']);
+
+  const iconPath = (name) => {
+    const chip = chipNamed(nodes, name);
+    assert.ok(chip, `找不到徽标 ${name}`);
+    const svg = flatten(chip.children).find((n) => n.type === 'svg');
+    assert.ok(svg, `${name} 徽标缺少图标（类型会退化成只靠颜色区分）`);
+    return flatten(svg.children).find((n) => n.type === 'path').props.d;
+  };
+  const branch = iconPath('main');
+  const remote = iconPath('origin/main');
+  const tag = iconPath('v0.9.0');
+  assert.notEqual(tag, branch, '标签图标必须与分支图标不同');
+  assert.notEqual(remote, branch, '远程分支图标必须与本地分支图标不同');
+  assert.notEqual(remote, tag);
+
+  // 当前分支（HEAD -> main）走 current token；远程分支不能因为名字里有 '/' 就被当成远程
+  assert.match(chipNamed(nodes, 'main').props.className, /sgg-ref-current/);
+  assert.match(chipNamed(nodes, 'v0.9.0').props.className, /sgg-ref-tag/);
+
+  // 本地分支名里带 '/' 也必须用分支图标（feature/x 不是远程分支）
+  const local = flatten(render(GraphRow({
+    row: { ...rows[0], refs: 'feature/x' }, lane: layout.rows[0], laneW: 15, radius: 4, branch: 'main',
+    open: false, onToggle: () => {}, onContextMenu: () => {}, branchColor: null, showTags: true,
+    remoteRefs: new Set(['origin/main']),
+  })));
+  assert.equal(chipNamed(local, 'feature/x').props.title, 'feature/x');
+  const localIcon = flatten(flatten(chipNamed(local, 'feature/x').children).find((n) => n.type === 'svg').children)
+    .find((n) => n.type === 'path').props.d;
+  assert.equal(localIcon, branch, 'feature/x 是本地分支，应使用分支图标');
+});
+
+test('预览脚本的徽标图标与 client.js 保持一致（漂移守卫）', () => {
+  const client = readFileSync(CLIENT, 'utf8');
+  const preview = readFileSync(join(CLIENT, '..', '..', 'tests', 'graph-preview.mjs'), 'utf8');
+  const icons = [...preview.matchAll(/^\s+(?:branch|remote|tag): '([^']+)',$/gm)].map((m) => m[1]);
+  assert.equal(icons.length, 3, '应为 branch/remote/tag 三条图标路径');
+  for (const d of icons) assert.ok(client.includes(d), `预览图标与 client.js 不一致：${d.slice(0, 24)}…`);
+});
+
+test('CSS 注入：热更后必须按新内容覆写（不能只按 <style> 已存在就跳过）', () => {
+  const client = readFileSync(CLIENT, 'utf8');
+  const body = /function injectCss\(\) \{([\s\S]*?)\n    \}/.exec(client);
+  assert.ok(body, '找不到 injectCss');
+  // 复用已有 <style> 并覆写 textContent（HMR 热更后新 CSS 才会生效）
+  assert.match(body[1], /querySelector\('style\[data-dsh-plugin=/);
+  assert.match(body[1], /style\.textContent = CSS/);
+  assert.equal(/if \(document\.querySelector\('style\[data-dsh-plugin=[^)]*\)\) return;/.test(body[1]), false,
+    'injectCss 不应在 <style> 已存在时直接 return');
 });

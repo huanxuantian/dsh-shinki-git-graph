@@ -2,7 +2,7 @@
 
 DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支树视图（类似 VS Code 的 Git Graph 扩展），支持写操作与远程同步。
 
-**当前版本：v0.9.0**（工作目录四级解析 + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + 网页端 git 认证（GIT_ASKPASS 桥，绝不停留在终端） + 便携 git 部署 + **Git Extensions 风格的曲线分支树**）
+**当前版本：v0.9.1**（工作目录四级解析 + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + 网页端 git 认证（GIT_ASKPASS 桥，绝不停留在终端） + 便携 git 部署 + Git Extensions 风格的曲线分支树 + **浅色/深色主题各自配色、分支/远程/标签徽标带图标**）
 
 > ⚠ **版本号有两处，必须同步**：`package.json` 的 `version` 与 `lib/client.js` 的 `PLUGIN_VERSION`
 > （侧边栏角标显示的就是后者；浏览器半边读不到 package.json，所以是硬编码副本）。
@@ -108,6 +108,21 @@ node --test tests/fence.test.mjs
 图谱样式的**目视校验**（无需浏览器）：`node tests/graph-preview.mjs --png` 会把三组样例历史画成
 `/tmp/git-graph-preview.svg|png`（若装了 `rsvg-convert` 则顺带转 PNG）。
 
+## 主题（浅色 / 深色）
+
+宿主主题服务用 `body[data-ds-dark-theme]` 切换深浅色（皮肤/自定义主题只改 `--dsw-*` 的值），
+插件据此给每个颜色准备两套值（token 前缀 `--sgg-`）：
+
+| token | 浅色 | 深色 | 最低对比度（对 #f9fafb / #1b1b1c） |
+|---|---|---|---|
+| `--sgg-lane-1..8` | `#9a6700 #bf3989 #0969da #1a7f37 #bc4c00 #1b7c83 #cf222e #57606a` | `#d29922 #f778ba #79c0ff #7ee787 #ffa657 #a5d6ff #ff7b72 #8b949e` | 4.66:1 / 5.11:1 |
+| `--sgg-ref-fg` / `-bg` / `-line` | `#0550ae` 等 | `#79c0ff` 等 | 徽标文字 ≥5.3:1 / ≥4.7:1 |
+| `--sgg-add/del/hunk/success/danger/warn` | `#1a7f37 #cf222e #0969da …` | `#7ee787 #ff7b72 #79c0ff …` | ≥4.5:1 |
+
+`tests/theme.test.mjs` 按 WCAG 公式断言这些数字（泳道是图形 → ≥3:1；文字 → ≥4.5:1），
+并保证两个主题的 token 集合一致、旧硬编码色不残留。改动配色后跑
+`node tests/graph-preview.mjs --png` 可同时生成深浅两套预览图目视核对。
+
 ## 已知限制（初版）
 
 - 标签随 refs 徽标显示（`tag: x` → `x`），无单独开关。
@@ -118,6 +133,7 @@ node --test tests/fence.test.mjs
 
 ## 版本历史
 
+- **v0.9.1**：**主题适配 + 分支/标签徽标重做** —— v0.9.0 的配色只有一套深色专用亮色，浅色主题下泳道线在 #f9fafb 上仅 1.47~2.94:1（低于 WCAG 图形要求 3:1，绿色/浅蓝几乎看不见），ref 徽标文字 <2.3:1。现所有颜色收敛为 `--sgg-*` token（浅色挂 `:root`、深色挂宿主主题开关 `body[data-ds-dark-theme]`），泳道线/分支树圆点/节点填充/徽标/diff 全部随主题切换；徽标改为**图标 + 描边 + 省略号**：本地分支=分支图标、远程分支=云图标、标签=标签牌图标（类型不再只靠颜色区分，远程判定查宿主远程分支清单而非「名字带斜杠」）。新增 `tests/theme.test.mjs` 按 WCAG 断言对比度（泳道 ≥3:1、文本 ≥4.5:1、两主题 token 集合一致），预览脚本改为同时产出深浅两套。
 - **v0.9.0**：**分支树绘制重做（Git Extensions 风格）** —— 原实现每行只画一串等宽字形（`│ ● ◉`），分叉/合并表现为「某列突然变空格（线断了）」，配色还随列号轮换。现改为按 Git Extensions 的绘制模型出**图形图元**：① 分叉/合并处画 S 曲线斜插进节点（不再断线）；② 泳道**随身携带颜色**（分支全程同色，只有分叉处出现第二种颜色），跨页沿用同一配色；③ 泳道每行**压缩**（释放的空列即时移除，右侧泳道用滑移曲线平移过去），图谱宽度只取决于同时并存的分支数；④ 节点形状按 GE 规则：有 ref → 方块、HEAD → 多一圈描边（合并提交不额外变形，靠曲线表达）；⑤ 布局/配色/几何收敛为单一真源 `lib/graph-layout.js`（内联进 `client.js`，由单测守卫一致），并新增 `tests/graph-preview.mjs` 目视校验脚本。`assignLanes` 旧入口保留为兼容层。
 - **v0.8.0**：**网页端 git 认证（askpass 桥）**——修复 Linux 上「推送时凭据提示落到宿主控制台、git 阻塞把整机卡死」的事故：网络操作改 `GIT_TERMINAL_PROMPT=0` + 真正的 `GIT_ASKPASS` 助手（`lib/askpass.sh|.cmd` + `lib/askpass-main.mjs`，经回环 HTTP 送回浏览器对话框，每操作一次性令牌）；`pendingPrompts` 改为按提示 id 登记（支持一次操作问两次、避免交错）；如实上报凭据助手状态并在认证失败时 `credential reject`。参考 VS Code `extensions/git/src/askpass.ts|askpass-main.ts`。
 - **v0.7.3**：**cwd 提示（成员资格校验）+ 精确错误码**。① 更正认知并利用既有能力：better-sidebar 的面板 scope 是 `{ sessionId, cwd }`（cwd 取自客户端侧、磁盘来源的会话列表），其自身 host 端也是"校验成员资格后才把客户端 cwd 当命令 cwd 用"；本插件现把 `scope.cwd` 作为**提示**随请求上报，host 仅在它能 realpath 命中**自己台账里的某个工作区路径**时才采信，且**台账不可用即忽略**（fail closed）—— 于是"会话既没打开、台账也没索引到"的情况也能出图，而浏览器依旧无法把 git 指向任意目录。② 错误语义细分：会话存在但目录已消失/改名 → 404 `workspace-missing`（附具体路径，客户端显示错误而非无意义轮询）；会话确实找不到 → 仍 404 `session-not-found`（客户端走有界重试 + 提示）。
