@@ -2,13 +2,12 @@
 
 DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支树视图（类似 VS Code 的 Git Graph 扩展），支持写操作与远程同步。
 
-**当前版本：v0.10.2**（工作目录四级解析 + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + 网页端 git 认证（GIT_ASKPASS 桥，绝不停留在终端） + 便携 git 部署 + Git Extensions 风格的曲线分支树 + 浅色/深色主题各自配色、分支/远程/标签徽标带图标 + **TAG 创建/管理：注释、GPG 签名、创建后推送、远程 TAG 拉取、三重确认删除**）
+**当前版本：v0.10.2**（工作目录四级解析 + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + 网页端 git 认证（GIT_ASKPASS 桥，绝不停留在终端） + Git Extensions 风格的曲线分支树 + 浅色/深色主题各自配色、分支/远程/标签徽标带图标 + **TAG 创建/管理：注释、GPG 签名、创建后推送、远程 TAG 拉取、三重确认删除**）
 
 > ⚠ **版本号有两处，必须同步**：`package.json` 的 `version` 与 `lib/client.js` 的 `PLUGIN_VERSION`
 > （侧边栏角标显示的就是后者；浏览器半边读不到 package.json，所以是硬编码副本）。
 > 只改前者会出现「json 已是新版本、界面仍显示旧版本」—— 0.8.0 时踩过。
-> 另：改完插件要在 profile 目录 `pnpm install` **重新物化**（`file:` 依赖是 pnpm 的硬链接副本，
-> 改源目录不生效），再**重启 dsh Web 服务**。
+> 另：host 半区在宿主进程启动时加载，改动后需**重启 dsh Web 服务**；仅客户端半包改动刷新页面即可。
 
 - **子目录 git 仓库探测**：当工作区本身不是 git（或不在 git 内）时，自动探测工作区子目录中的 git 仓库（默认最多 3 层，跳过隐藏目录与 node_modules），以**折叠列表**展示（仓库名按**工作区相对路径**），点击某行即**展开单独管理**该仓库（图谱/分支树/暂存区/写操作/同步全部作用于该仓库）；仓库较多时分页「加载更多仓库」。工作区本身是 git 时保持原有单仓库逻辑不变。
 
@@ -23,27 +22,28 @@ DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支�
 
 ## 验证状态
 
-**工作目录解析（v0.7.2 / v0.7.3）**：`tests/session-cwd.test.mjs` **13/13 通过** —— 活跃会话优先（且不被其他来源覆盖）/ 未打开会话从磁盘会话头解析 / 工作区台账兜底 / 未知 id → `session-unknown` / 会话在但目录没了 → `workspace-missing` / 可选服务缺失优雅降级 / 空或非字符串 id → null / 缓存每次 id 仅一次扫描 / **scope.cwd 提示：命中台账工作区才采信、非工作区路径拒绝、台账不可用则失败关闭（fail closed）**。真实数据复核：A571（`D:\hzw\work\car` 子目录，7 万+ 文件）的 4 个会话在**未打开**状态下均解析到 `D:\hzw\work\car\brank_brank\example\A571`；进程内直调真实 handler 端到端实测 `init` 721ms（`isRepo=true root=D:/hzw/work/car subdir=brank_brank/example/A571`）、`graph` 746ms（10 行）；未打开且台账未索引的会话 + 合法 cwd 提示同样能出图，未知会话仍 404 `session-not-found`，目录已消失则 404 `workspace-missing`。排查记录见 `doc/调试笔记-20260911-git图谱工作区无会话无限刷新.md`。
+**工作目录解析（v0.7.2 / v0.7.3）**：`tests/session-cwd.test.mjs` **13/13 通过** —— 活跃会话优先（且不被其他来源覆盖）/ 未打开会话从磁盘会话头解析 / 工作区台账兜底 / 未知 id → 内部 reason `session-unknown`（HTTP 404 `session-not-found`）/ 会话在但目录没了 → `workspace-missing` / 可选服务缺失优雅降级 / 空或非字符串 id → null / 缓存每次 id 仅一次扫描 / **scope.cwd 提示：命中台账工作区才采信、非工作区路径拒绝、台账不可用则失败关闭（fail closed）**。
 
-单测全绿（**95 个**：git-service 56 / routes 26 / lanes 7 / fence 6；新增子仓库扫描与 repoPath 路由用例）。已用真实路径 `D:\AI\win\data\home` 全链路实测（`tests/validate-subrepos.mjs`）：工作区非 git 时 `init` 返回子仓库列表（3 层内、跳过隐藏/node_modules、排除第 4 层），空白仓库以 `HEAD` 分支列出，`repoPath` 定位子仓库的 branches/graph/status 正常，路径逃逸（`..`/`C:/x`/`/abs`）均 400 拒绝；工作区为 git 时保持原逻辑。已在副本运行环境（`D:\vmx\test\dsh-win-x64`，端口 3081）验证：bundle 加载 v0.7.0、API 路由挂载、fence 放行、`dsh.ps1 check` 便携 git 注入成功、git 认证交互路由（prompt-poll/answer）；GUI 交互（同步对话框/分支操作/认证输入）已人工确认主要流程。原环境（`D:\vmx\dsh-win-x64`）未受影响。
+**子目录仓库与空白仓库（v0.7.0）**：工作区本身非 git 时 `init` 返回子仓库列表（默认 3 层内、跳过隐藏目录与 node_modules、排除第 4 层），空白仓库（无提交）以 `HEAD` 分支列出不报错，`repoPath` 定位子仓库的 branches/graph/status 正常，路径逃逸（`..` / `C:/x` / `/abs`）均 400 拒绝；工作区为 git 时保持原有单仓库逻辑。用例见 `tests/git-service.test.mjs` 与 `tests/routes.test.mjs`。
+
+**全量单测**：`node --test` → **177 用例全绿**（零第三方依赖；涉及 git 的用例在临时仓库里跑真实 git）。开发过程中的人工验证（多会话工作区、子目录仓库、认证推送/拉取、TAG 全生命周期）已在真实环境完成，此处不再罗列具体路径。
 
 ## 安装
 
-本插件依赖 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar)（侧边栏宿主，提供 `ctx.betterSidebar` 注册服务）。
+前置：宿主需已安装 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar)（提供 `ctx.betterSidebar` 侧边栏注册服务）；系统 `PATH` 上需有 `git`（插件按命令逐条 spawn，不走 shell）。
 
 ```sh
-# 本地开发（link: 方式，重建后刷新即生效）
-dsh plugin --profile web add link:/绝对路径/plugin/web/dsh-shinki-git-graph
-
-# 或从 npm 安装
+# 从 npm 安装（发布后）
 dsh plugin --profile web add dsh-shinki-git-graph
 
-# 或拷贝到运行时 plugin\web\ 后，在 profile 目录执行 pnpm install
+# 直接从 GitHub 安装
+dsh plugin --profile web add github:huanxuantian/dsh-shinki-git-graph
+
+# 本地开发（link: 方式：改完重启 dsh web 生效）
+dsh plugin --profile web add link:/绝对路径/dsh-shinki-git-graph
 ```
 
-安装后重启 `dsh web`，侧边栏 + 菜单出现「Git 图谱」Tab。
-
-> 便携 git：`engine/dsh.ps1` / `engine/dsh.bat` 在系统无 git 时会自动下载 PortableGit 到 `engine/git-win-x64` 并注入 PATH（`DSH_AUTO_GIT_DOWNLOAD=0` 禁用，`DSH_GIT_VERSION` 指定版本）。
+安装后重启 `dsh web`，侧边栏 + 菜单出现「Git 图谱」Tab。**仅支持 web profile**；签名 TAG（`-s`）需本机已配置 GPG 密钥。
 
 ## 卸载
 
@@ -53,9 +53,9 @@ dsh plugin --profile web remove dsh-shinki-git-graph
 
 ## 设置
 
-- **分支范围**（当前+上游 / 全部）、**页大小**（50/100/200/500）、**显示标签**：侧边栏设置页声明式设置行（`pluginSettings`，v0.12+），localStorage 回退双写，跨会话记忆；页大小也保留「⋯」菜单入口。
+- **分支范围**（当前+上游 / 全部）、**页大小**（50/100/200/500）、**显示标签**：走宿主的声明式设置页（`pluginSettings`），并以 localStorage 回退双写、跨会话记忆；页大小也保留「⋯」菜单入口。
 
-## Git 认证（v0.8.0 重做，※ 本机 Linux 冻结事故的修复）
+## Git 认证（v0.8.0 重做：修掉推送时凭据提示把宿主控制台顶死）
 
 **背景（2026-09-22 实测）**：旧实现以为「git 把凭据提示写到 stderr、从 stdin 读答案」，于是
 `netEnv()` 设了 `GIT_TERMINAL_PROMPT=1` 且把 `GIT_ASKPASS` **清空**，靠 `lib/git-runner.js` 的
@@ -141,10 +141,10 @@ node --test tests/fence.test.mjs
 - **v0.9.0**：**分支树绘制重做（Git Extensions 风格）** —— 原实现每行只画一串等宽字形（`│ ● ◉`），分叉/合并表现为「某列突然变空格（线断了）」，配色还随列号轮换。现改为按 Git Extensions 的绘制模型出**图形图元**：① 分叉/合并处画 S 曲线斜插进节点（不再断线）；② 泳道**随身携带颜色**（分支全程同色，只有分叉处出现第二种颜色），跨页沿用同一配色；③ 泳道每行**压缩**（释放的空列即时移除，右侧泳道用滑移曲线平移过去），图谱宽度只取决于同时并存的分支数；④ 节点形状按 GE 规则：有 ref → 方块、HEAD → 多一圈描边（合并提交不额外变形，靠曲线表达）；⑤ 布局/配色/几何收敛为单一真源 `lib/graph-layout.js`（内联进 `client.js`，由单测守卫一致），并新增 `tests/graph-preview.mjs` 目视校验脚本。`assignLanes` 旧入口保留为兼容层。
 - **v0.8.0**：**网页端 git 认证（askpass 桥）**——修复 Linux 上「推送时凭据提示落到宿主控制台、git 阻塞把整机卡死」的事故：网络操作改 `GIT_TERMINAL_PROMPT=0` + 真正的 `GIT_ASKPASS` 助手（`lib/askpass.sh|.cmd` + `lib/askpass-main.mjs`，经回环 HTTP 送回浏览器对话框，每操作一次性令牌）；`pendingPrompts` 改为按提示 id 登记（支持一次操作问两次、避免交错）；如实上报凭据助手状态并在认证失败时 `credential reject`。参考 VS Code `extensions/git/src/askpass.ts|askpass-main.ts`。
 - **v0.7.3**：**cwd 提示（成员资格校验）+ 精确错误码**。① 更正认知并利用既有能力：better-sidebar 的面板 scope 是 `{ sessionId, cwd }`（cwd 取自客户端侧、磁盘来源的会话列表），其自身 host 端也是"校验成员资格后才把客户端 cwd 当命令 cwd 用"；本插件现把 `scope.cwd` 作为**提示**随请求上报，host 仅在它能 realpath 命中**自己台账里的某个工作区路径**时才采信，且**台账不可用即忽略**（fail closed）—— 于是"会话既没打开、台账也没索引到"的情况也能出图，而浏览器依旧无法把 git 指向任意目录。② 错误语义细分：会话存在但目录已消失/改名 → 404 `workspace-missing`（附具体路径，客户端显示错误而非无意义轮询）；会话确实找不到 → 仍 404 `session-not-found`（客户端走有界重试 + 提示）。
-- **v0.7.2**：**工作目录改为三级解析（修 A571 工作区打不开）**——原先只从 `ctx.sessions.get(sessionId)` 取 cwd，而那是**内存里"当前已打开"的会话表**：没打开的会话一律 404 `session-not-found`，于是同一仓库下 p507 正常、A571 一直失败。现按序回退：① 活跃会话 → ② 磁盘会话头（`sessionQuery.listSessions()`） → ③ 工作区台账（`workspaceRegistry.list()` 按 `sessionIds` 反查 `path`）；后两者用 `ctx.get()` 可选获取，缺失时优雅降级为原行为。仅回环客户端可达（trust fence 未变），路径仍全部由宿主推导。
-- **v0.7.1**：**面板拿不到可用会话时不再无限刷新**——原实现每 2s 无上限重试，表现为 A571 这类 workspace「一直在反复刷新」且始终没有 git 信息。现改为**有界重试**（10 × 2s ≈ 20s）后停止自动刷新，给出说明与「重试」按钮；新会话出现或手动重试会重置预算。（**更正**：初版此处写的"better-sidebar 的 scope 只带 `sessionId`"是错的 —— 实际是 `{ sessionId, cwd }`，详见 v0.7.3。）
+- **v0.7.2**：**工作目录改为三级解析（修「未打开的会话打不开工作区」）**——原先只从 `ctx.sessions.get(sessionId)` 取 cwd，而那是**内存里"当前已打开"的会话表**：没打开的会话一律 404 `session-not-found`，于是同一个仓库下已打开的会话正常、未打开的会话一直失败。现按序回退：① 活跃会话 → ② 磁盘会话头（`sessionQuery.listSessions()`） → ③ 工作区台账（`workspaceRegistry.list()` 按 `sessionIds` 反查 `path`）；后两者用 `ctx.get()` 可选获取，缺失时优雅降级为原行为。仅回环客户端可达（trust fence 未变），路径仍全部由宿主推导。
+- **v0.7.1**：**面板拿不到可用会话时不再无限刷新**——原实现每 2s 无上限重试，表现为这类工作区「一直在反复刷新」且始终没有 git 信息。现改为**有界重试**（10 × 2s ≈ 20s）后停止自动刷新，给出说明与「重试」按钮；新会话出现或手动重试会重置预算。（**更正**：初版此处写的"better-sidebar 的 scope 只带 `sessionId`"是错的 —— 实际是 `{ sessionId, cwd }`，详见 v0.7.3。）
 - **v0.7.0**：**子目录 git 仓库探测**——工作区本身非 git 时扫描子目录 git 仓库（默认 3 层，跳过隐藏/node_modules，上限防护），折叠列表（工作区相对路径）+ 分页「加载更多」；点击展开对单个仓库独立管理（全部方法经 `repoPath` 定位，host 侧防路径逃逸）；工作区为 git 时逻辑不变。
-- **v0.6.0**：M5 分支写操作（切换/新建/检出，远程分支自动跟踪、未跟踪自动绑定默认远程同名、linkCurrent 会话参数）；页大小设置 UI + pluginSettings 接线；跨页泳道续接；启动体验（无会话提示 + 自动轮询）；pull/push 增强（`-u`/`--rebase`/ahead-behind）；git 认证交互；便携 git 自动部署。
+- **v0.6.0**：M5 分支写操作（切换/新建/检出，远程分支自动跟踪、未跟踪自动绑定默认远程同名、linkCurrent 会话参数）；页大小设置 UI + pluginSettings 接线；跨页泳道续接；启动体验（无会话提示 + 自动轮询）；pull/push 增强（`-u`/`--rebase`/ahead-behind）；git 认证交互。
 - **v0.5.0**：提交行右键「查看 diff」内联化；pull/push/fetch-all 同步（含 tag 推送/拉取、fetch-only）。
 - **v0.3.x**：泳道图 / 分支树 / 详情展开 / 多分支颜色（初版布局）。
 
@@ -153,8 +153,8 @@ node --test tests/fence.test.mjs
 - Git Extensions 的提交图绘制（本项目 v0.9.0 分支树样式的参考）：
   `src/app/GitUI/UserControls/RevisionGrid/Graph/Rendering/{GraphRenderer,SegmentRenderer}.cs`
   —— 泳道宽度 16 / 线宽 2 / 节点 10、每段「上一行-本行-下一行」三点几何、两端竖直时的贝塞尔配方、
-  有 ref → 方块与 HEAD 描边；`RevisionGraphLaneColor.cs` 的 7 色调色板与「颜色挂在段上」的稳定配色；
-  `docs/macos/reduced-graph-design.md` 的 reduced-graph 算法与「lane 压缩 / 滑移」说明。
+  有 ref → 方块与 HEAD 描边；`RevisionGraphLaneColor.cs` 的 7 色调色板与「颜色挂在段上」的稳定配色，
+  以及 reduced-graph（lane 压缩 / 滑移）的取舍。
 
 - VS Code Git 扩展的 askpass：`extensions/git/src/askpass.ts`（环境注入 `GIT_ASKPASS`/`VSCODE_GIT_ASKPASS_*`、无 IPC 时用 `askpassEmpty`、按 authority 缓存 60s、密码用掩码输入框）与 `extensions/git/src/askpass-main.ts`（助手经 IPC 取答案、写管道文件、失败 `fatal()` 退出 1）
 - git 官方：`gitcredentials(7)`（取凭据顺序 `GIT_ASKPASS` → `core.askPass` → `SSH_ASKPASS` → **终端提示**）、`git-credential(1)`（`fill`/`approve`/`reject` 协议）
