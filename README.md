@@ -4,6 +4,8 @@ DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支�
 
 **当前版本：v0.10.2**（工作目录四级解析 + 子目录 git 仓库探测 + M5 分支写操作 + 远程同步 + 网页端 git 认证（GIT_ASKPASS 桥，绝不停留在终端） + Git Extensions 风格的曲线分支树 + 浅色/深色主题各自配色、分支/远程/标签徽标带图标 + **TAG 创建/管理：注释、GPG 签名、创建后推送、远程 TAG 拉取、三重确认删除**）
 
+> 代码托管：**主库** [GitHub](https://github.com/huanxuantian/dsh-shinki-git-graph) ｜ **备用库** [自建 Git（cpolar 隧道）](https://shinkidocker.cpolar.cn/huanxuantian/dsh-shinki-git-graph)（详见「安装 → 仓库地址」）
+
 > ⚠ **版本号有两处，必须同步**：`package.json` 的 `version` 与 `lib/client.js` 的 `PLUGIN_VERSION`
 > （侧边栏角标显示的就是后者；浏览器半边读不到 package.json，所以是硬编码副本）。
 > 只改前者会出现「json 已是新版本、界面仍显示旧版本」—— 0.8.0 时踩过。
@@ -36,14 +38,34 @@ DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支�
 # 从 npm 安装（发布后）
 dsh plugin --profile web add dsh-shinki-git-graph
 
-# 直接从 GitHub 安装
+# 从主库 GitHub 安装
 dsh plugin --profile web add github:huanxuantian/dsh-shinki-git-graph
+
+# 从备用库安装（GitHub 访问不畅时；同一份代码，同一个 main）
+dsh plugin --profile web add git+https://shinkidocker.cpolar.cn/huanxuantian/dsh-shinki-git-graph.git
 
 # 本地开发（link: 方式：改完重启 dsh web 生效）
 dsh plugin --profile web add link:/绝对路径/dsh-shinki-git-graph
 ```
 
 安装后重启 `dsh web`，侧边栏 + 菜单出现「Git 图谱」Tab。**仅支持 web profile**；签名 TAG（`-s`）需本机已配置 GPG 密钥。
+
+### 仓库地址
+
+| 用途 | 地址 |
+|---|---|
+| 主库（GitHub） | <https://github.com/huanxuantian/dsh-shinki-git-graph> |
+| 备用库（自建 Git，cpolar 隧道） | <https://shinkidocker.cpolar.cn/huanxuantian/dsh-shinki-git-graph> |
+
+两处内容一致（同一个 `main` 分支；以主库为准）。克隆或换源：
+
+```sh
+git clone https://github.com/huanxuantian/dsh-shinki-git-graph.git            # 主库
+git clone https://shinkidocker.cpolar.cn/huanxuantian/dsh-shinki-git-graph.git # 备用库
+git remote set-url origin https://shinkidocker.cpolar.cn/huanxuantian/dsh-shinki-git-graph.git  # 只换抓取源
+```
+
+> 备用库走自建隧道，域名/IP 可能变化；长期不可用时以主库为准。
 
 ## 卸载
 
