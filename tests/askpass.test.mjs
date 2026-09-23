@@ -133,7 +133,15 @@ before(async () => {
   git(['config', 'user.email', 't@example.com'], workRepo);
   git(['config', 'user.name', 'Tester'], workRepo);
   // Keep the credential in a file so the test can inspect approve/reject.
-  git(['config', 'credential.helper', `store --file=${credFile}`], workRepo);
+  // ⚠️ 先**清空继承来的 helper 链**（系统/全局），否则链上还有 Git Credential Manager：
+  //    store 里没凭据时 git 会先问 GCM，而 GCM 会弹**图形账号密码窗口**（实测在 Windows 上
+  //    就是本测试把用户的 GCM 弹窗炸出来）。清空后再加 store，git 在 store 无凭据时
+  //    才会退回到 GIT_ASKPASS（即插件的网页桥），与生产路径一致。
+  // ⚠️ Windows 另一坑：helper 经 shell 调用，配置值里的反斜杠会被当转义吃掉
+  //    （`store --file=C:\Users\...` → 路径残缺）→ 统一用正斜杠。
+  const credFileArg = credFile.replace(/\\/g, '/');
+  git(['config', 'credential.helper', ''], workRepo);
+  git(['config', '--add', 'credential.helper', `store --file=${credFileArg}`], workRepo);
   writeFileSync(path.join(workRepo, 'a.txt'), 'v1\n');
   git(['add', '.'], workRepo);
   git(['commit', '-m', 'c1'], workRepo);
