@@ -535,3 +535,153 @@ test('删除 TAG（DOM 级）：真实删除流程必须真的弹出确认框，
   assert.equal(confirmed, 1, '确认后应执行删除回调');
   assert.equal(state.alsoRemote, true, '「同时删除远程 TAG」的状态应被带出');
 });
+
+// ── v0.11.0：重置 / 检出自动 reset / merge ────────────────────────────────
+
+test('重置对话框：三种模式 + hard 有危险二次确认（勾选后才执行）', () => {
+  const dom = makeFakeDom();
+  const { exports } = loadBundle({ document: dom.document });
+  const { showResetDialog } = exports.__internals;
+  const runs = [];
+  showResetDialog({
+    hash: 'a'.repeat(40), targetText: 'aaaaaaa subject', branch: 'main', detached: false,
+    dirtyCount: 3, onRun: (x) => runs.push(x),
+  });
+  const body = dom.document.body;
+  const selects = findNode(body, (n) => n.tagName === 'select');
+  const modeSel = selects[selects.length - 1];
+  assert.deepEqual(modeSel.children.map((o) => o.value), ['mixed', 'soft', 'hard'], '三种 reset 模式');
+  // 文案里要说明会不会丢东西
+  const texts = findNode(body, (n) => typeof n.textContent === 'string' && n.textContent !== '').map((n) => n.textContent);
+  assert.ok(texts.some((x) => /--hard/.test(x) && /丢弃/.test(x)), `应有 hard 风险说明：${texts.join(' | ')}`);
+
+  // mixed：直接执行
+  modeSel.value = 'mixed';
+  const run = findNode(body, (n) => (n.className ?? '').includes('sgg-dialog-run'))[0];
+  run.onclick();
+  assert.deepEqual(runs, [{ mode: 'mixed' }]);
+
+  // hard + 脏工作区：先弹危险确认，未勾选时按钮禁用，勾选后执行
+  dom.document.body.children.length = 0;
+  showResetDialog({
+    hash: 'a'.repeat(40), targetText: 'aaaaaaa', branch: 'main', detached: false,
+    dirtyCount: 3, onRun: (x) => runs.push(x),
+  });
+  const sel2 = findNode(dom.document.body, (n) => n.tagName === 'select').pop();
+  sel2.value = 'hard';
+  findNode(dom.document.body, (n) => (n.className ?? '').includes('sgg-dialog-run'))[0].onclick();
+  const danger = findNode(dom.document.body, (n) => (n.className ?? '').includes('sgg-confirm-danger'))[0];
+  assert.ok(danger, 'hard + 脏工作区必须弹危险确认');
+  assert.equal(danger.disabled, true, '未确认前不允许执行');
+  const check = findNode(dom.document.body, (n) => n.type === 'checkbox')[0];
+  check.checked = true;
+  check.onchange();
+  assert.equal(danger.disabled, false);
+  danger.onclick();
+  assert.deepEqual(runs[1], { mode: 'hard' });
+
+  // 干净工作区 + hard：不需要二次确认
+  dom.document.body.children.length = 0;
+  showResetDialog({
+    hash: 'a'.repeat(40), targetText: 'aaaaaaa', branch: 'main', detached: false,
+    dirtyCount: 0, onRun: (x) => runs.push(x),
+  });
+  const sel3 = findNode(dom.document.body, (n) => n.tagName === 'select').pop();
+  sel3.value = 'hard';
+  findNode(dom.document.body, (n) => (n.className ?? '').includes('sgg-dialog-run'))[0].onclick();
+  assert.deepEqual(runs[2], { mode: 'hard' });
+});
+
+test('检出提交对话框：「自动 reset」选项始终在（干净时置灰 + 说明）', () => {
+  const dom = makeFakeDom();
+  const { exports } = loadBundle({ document: dom.document });
+  const { showDetachDialog } = exports.__internals;
+
+  // 脏工作区：可勾选，勾了才带 autoReset
+  const runs = [];
+  showDetachDialog({ hash: 'b'.repeat(40), targetText: 'bbbbbbb', dirtyCount: 2, onRun: (x) => runs.push(x) });
+  let checks = findNode(dom.document.body, (n) => n.type === 'checkbox');
+  assert.equal(checks.length, 1, '应有「自动 reset」复选框');
+  assert.equal(checks[0].disabled, false);
+  findNode(dom.document.body, (n) => (n.className ?? '').includes('sgg-dialog-run'))[0].onclick();
+  assert.deepEqual(runs, [{ autoReset: false }], '未勾选时不应自动 reset');
+
+  dom.document.body.children.length = 0;
+  showDetachDialog({ hash: 'b'.repeat(40), targetText: 'bbbbbbb', dirtyCount: 2, onRun: (x) => runs.push(x) });
+  checks = findNode(dom.document.body, (n) => n.type === 'checkbox');
+  checks[0].checked = true;
+  findNode(dom.document.body, (n) => (n.className ?? '').includes('sgg-dialog-run'))[0].onclick();
+  assert.deepEqual(runs[1], { autoReset: true });
+
+  // 干净工作区：选项仍在但置灰
+  dom.document.body.children.length = 0;
+  showDetachDialog({ hash: 'b'.repeat(40), targetText: 'bbbbbbb', dirtyCount: 0, onRun: (x) => runs.push(x) });
+  checks = findNode(dom.document.body, (n) => n.type === 'checkbox');
+  assert.equal(checks.length, 1, '干净时也要显示选项（不让用户以为没有）');
+  assert.equal(checks[0].disabled, true);
+  const texts = findNode(dom.document.body, (n) => typeof n.textContent === 'string' && n.textContent !== '').map((n) => n.textContent);
+  assert.ok(texts.some((x) => /干净/.test(x)), '干净时应说明无需 reset');
+});
+
+test('检出分支对话框：带「自动 reset」并把选择透传出去', () => {
+  const dom = makeFakeDom();
+  const { exports } = loadBundle({ document: dom.document });
+  const { showCheckoutDialog } = exports.__internals;
+  const runs = [];
+  showCheckoutDialog({
+    local: [{ name: 'main' }, { name: 'feature' }], remote: [{ name: 'origin/main' }],
+    currentBranch: 'main', dirtyCount: 1, onRun: (b, lc, ar) => runs.push([b, lc, ar]),
+  });
+  const sel = findNode(dom.document.body, (n) => n.tagName === 'select')[0];
+  sel.value = 'feature';
+  const ar = findNode(dom.document.body, (n) => n.type === 'checkbox').pop();
+  assert.ok(ar, '应带自动 reset 复选框（linkCurrent 之外）');
+  assert.equal(ar.disabled, false);
+  ar.checked = true;
+  findNode(dom.document.body, (n) => (n.className ?? '').includes('sgg-dialog-run'))[0].onclick();
+  assert.deepEqual(runs, [['feature', false, true]], 'autoReset 应随检出一起透传');
+});
+
+test('合并横幅：无合并不渲染；有合并显示继续/中止；冲突未解决时继续置灰', () => {
+  const dom = makeFakeDom();
+  const { exports } = loadBundle({ document: dom.document });
+  const { MergeBanner } = exports.__internals;
+  const nodesFor = (merge) => flatten(render(MergeBanner({
+    merge, branch: 'main', busy: false, onContinue: () => {}, onAbort: () => {},
+  })));
+
+  assert.equal(MergeBanner({ merge: null, branch: 'main', busy: false }), null);
+  assert.equal(MergeBanner({ merge: { merging: false }, branch: 'main', busy: false }), null);
+
+  const ok = nodesFor({ merging: true, short: 'abc1234', subject: 'feature work', conflicts: [] });
+  let texts = ok.filter((n) => typeof n.children?.[0] === 'string').map((n) => n.children[0]).join(' | ');
+  assert.match(texts, /正在合并 abc1234 到 main/);
+  assert.match(texts, /无冲突/);
+  let btns = ok.filter((n) => n.type === 'button');
+  assert.deepEqual(btns.map((b) => b.props.disabled), [false, false], '无冲突时继续可用');
+
+  const bad = nodesFor({ merging: true, short: 'abc1234', conflicts: ['a.txt', 'b.txt'] });
+  texts = bad.filter((n) => typeof n.children?.[0] === 'string').map((n) => n.children[0]).join(' | ');
+  assert.match(texts, /2 个文件冲突/);
+  assert.match(texts, /a\.txt · b\.txt/);
+  btns = bad.filter((n) => n.type === 'button');
+  assert.equal(btns[0].props.disabled, true, '冲突未解决时「继续合并」必须禁用');
+  assert.equal(btns[1].props.disabled, false, '「中止合并」始终可用');
+  assert.match(String(btns[0].props.title), /未解决冲突/);
+});
+
+test('合并接线：load 拉 mergeState；提交行/分支树有重置·合并入口；继续走对话框', () => {
+  const src = readFileSync(CLIENT, 'utf8');
+  assert.match(src, /post\('mergeState', p\)/, 'load 应拉取合并状态');
+  assert.match(src, /label: t\('resetHere'\), onClick: \(\) => openResetHere\(pos\.row\.oid\)/);
+  assert.match(src, /label: t\('mergeHere'\), onClick: \(\) => doMerge\(pos\.row\.oid\)/);
+  assert.match(src, /label: t\('mergeBranchHere'\), onClick: \(\) => doMerge\(bname\)/);
+  assert.match(src, /api\('reset', \{ hash: oid, mode \}\)/);
+  assert.match(src, /api\('merge', \{ ref \}\)/);
+  assert.match(src, /api\('mergeContinue', \{ message \}\)/);
+  assert.match(src, /api\('mergeAbort'\)/);
+  assert.match(src, /h\(MergeBanner, \{/, '根渲染应挂 MergeBanner');
+  // 检出分支：脏工作区确认框里带 autoReset（勾选才丢改动）
+  assert.match(src, /api\('checkout', \{ branch, linkCurrent, autoReset: reset === true \}\)/);
+  assert.match(src, /api\('checkoutCommit', \{ hash, autoReset: autoReset === true \}\)/);
+});

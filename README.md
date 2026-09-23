@@ -28,7 +28,17 @@ DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支�
 
 **子目录仓库与空白仓库（v0.7.0）**：工作区本身非 git 时 `init` 返回子仓库列表（默认 3 层内、跳过隐藏目录与 node_modules、排除第 4 层），空白仓库（无提交）以 `HEAD` 分支列出不报错，`repoPath` 定位子仓库的 branches/graph/status 正常，路径逃逸（`..` / `C:/x` / `/abs`）均 400 拒绝；工作区为 git 时保持原有单仓库逻辑。用例见 `tests/git-service.test.mjs` 与 `tests/routes.test.mjs`。
 
-**全量单测**：`node --test` → **177 用例全绿**（零第三方依赖；涉及 git 的用例在临时仓库里跑真实 git）。开发过程中的人工验证（多会话工作区、子目录仓库、认证推送/拉取、TAG 全生命周期）已在真实环境完成，此处不再罗列具体路径。
+**全量单测**：`node --test` → **198 用例**（零第三方依赖；涉及 git 的用例在临时仓库里跑真实 git）。
+其中图谱 / TAG / 重置 / merge 相关 **111 项在任何 git ≥ 2.0 环境都应全绿**；`git-service` / `routes` /
+`fence` / `session-cwd` / `askpass` 里的 87 项会因测试夹具使用 `git init -b`（需 git ≥ 2.28）而在旧 git 上失败 ——
+这是**测试夹具的环境差异**，不是功能差异。开发过程中的人工验证（多会话工作区、子目录仓库、
+认证推送/拉取、TAG 全生命周期、曲线分支树与主题）已在真实环境完成。
+
+**v0.11.0 新增能力**（`tests/merge-reset.test.mjs` 10/10、`tests/merge-reset-routes.test.mjs` 6/6，
+外加 `client-load` 的 5 条 DOM/接线用例）：`reset` 三种模式（含 --hard 丢改动的二次确认）、
+检出分支/提交的「自动 reset」选项（脏工作区确认框里始终可见）、merge 状态检测与
+继续（提交）/中止（`git merge --abort`）、以及 `git merge` 发起合并（冲突不算错误，
+留在 merging 状态由 UI 继续或中止）。
 
 ## 安装
 
@@ -110,7 +120,8 @@ dsh web 继承了控制终端时，提示被打进宿主控制台、git 阻塞�
 
 - **host 半区**（`lib/index.js`，Node）：git 数据服务 + `POST /shinki-git/api` 路由。
   - 数据：`init` / `branches`（本地+远程+上游映射）/ `graph`（`git log --parents` 拓扑，revs 白名单防注入，skip/limit 分页）/ `commit`（元信息 + numstat + diff）/ `status` / `diff` / `stage` / `unstage` / `discard` / `wcommit`。
-  - 分支写操作：`checkout`（切换，白名单 + 存在性校验，当前分支返回 unchanged；远程分支本地无同名时 `--track` 自动建跟踪分支）/ `createBranch`（新建，重名拒绝，base 可为本地/远程分支或 hash，远程 base 自动 `--track` 设上游）/ `checkoutCommit`（detached 检出，hash 正则校验）。
+  - 分支写操作：`checkout`（切换，白名单 + 存在性校验，当前分支返回 unchanged；远程分支本地无同名时 `--track` 自动建跟踪分支；`autoReset` = 先 `git reset --hard HEAD` 再检出，用于脏工作区「自动 reset」）/ `createBranch`（新建，重名拒绝，base 可为本地/远程分支或 hash，远程 base 自动 `--track` 设上游）/ `checkoutCommit`（detached 检出，hash 正则校验，同样支持 `autoReset`）/ **`reset`**（`git reset --soft|--mixed|--hard <hash>`，模式白名单；--hard 由 UI 二次确认并提示会丢弃多少项改动）。
+  - **merge**：`mergeState`（**按 MERGE_HEAD 判定**，与 git 的本地化冲突文案无关；返回 mergeHead/short/subject/冲突文件/预填的 MERGE_MSG）/ `merge`（`git merge --no-edit <ref>`，ref 可为分支/远程分支/hash；**冲突不是错误**，返回 `{conflicted:true,...state}` 并留在 merging 状态）/ `mergeContinue`（`git commit [--no-edit]`，仍有未解决冲突则 400）/ `mergeAbort`（`git merge --abort`，危险，UI 确认）。
   - 同步：`remotes`（`git remote -v`）/ `tags`（`for-each-ref refs/tags`）/ `push`（`git push [-u]` 分支或 `git push <remote> tag <tag>`）/ `pull`（`git pull [--rebase]` 分支，`fetchOnly` 时仅 `git fetch`；`tag` 时仅 fetch）/ `fetchAll`（`git fetch --all --prune`）；**TAG**：`tagCreate`（`git tag --no-sign|-a -m|-s -m`，注释/签名必须有消息，否则 git 会开编辑器卡住；轻量 TAG 显式 `--no-sign` 以免 `tag.gpgSign=true` 时被意外签名）/ `tagDelete`（`git tag -d`，危险，UI 三重确认）/ `tagDeleteRemote`（`git push --delete <remote> refs/tags/<tag>`，**先 ls-remote 确认远程确有该 TAG** —— `push --delete` 删不存在的远端 ref 也返回 0）/ `tagsFetch`（`git fetch [<remote>|--all] --tags`，不 prune）/ `tagsRemote`（`git ls-remote --tags`）；远程名/分支名/标签名白名单校验，branch 与 tag 二选一，网络操作 120s 超时；**认证**：`onPrompt` 凭据提示桥接（`prompt-poll`/`prompt-answer`）+ SSH BatchMode + 认证失败友好映射。
   - 安全：回环 socket + Host/`--trusted-host` 围栏（`lib/trust-fence.js`）；仓库路径仅从会话 cwd 解析，绝不信任客户端传入路径；git 逐条 spawn（无 shell）+ 超时 + 输出上限。
 - **browser 半区**（`lib/client.js`）：通过 `window.__ModuleLoader__` 加载，注册侧边栏 Tab（`ctx.betterSidebar.registerTab`），渲染分支树 + 泳道提交图 + 展开详情 + 写操作/同步/认证对话框。泳道算法与官方 git-graph 插件一致（`lib/lanes.js`，client 内有内联副本，需同步）。
@@ -152,10 +163,13 @@ node --test tests/fence.test.mjs
 - 泳道间距按整页最宽行自适应（15 / 12 / 9 / 7 px），提交点半径随之缩小；图谱列宽度上限为行宽的
   62%，超过时整幅图**等比挤压**（所有泳道都还在，节点略呈椭圆）——侧边栏宽度所限，优先保住提交标题。
 - 仅 web profile。
-- pull/push 的 `--rebase` / `-u` 已支持；暂未支持交互式 rebase 与冲突解决 UI。
+- pull/push 的 `--rebase` / `-u` 已支持；**merge 冲突解决仍是「用编辑器/外部工具改文件 + 在暂存区暂存」**，本插件提供状态横幅（冲突文件列表）、继续（提交）与中止；不提供三方合并编辑器。
+- `reset --hard`（以及「自动 reset」检出、中止合并）都会丢弃未提交改动：都在 UI 里显式提示并用二次确认（reset --hard 需要勾选确认），未跟踪文件一律不动。
+- 重置/合并都是在**当前分支**上操作；游离 HEAD 下的重置只移动 HEAD（对话框里有说明）。
 
 ## 版本历史
 
+- **v0.11.0**：**重置到提交 + 检出自动 reset + merge 支持** —— ① 提交行右键「将当前分支重置到此提交…」：对话框选 `--soft / --mixed / --hard`（每种都写明会不会保留改动），脏工作区时提示将被丢弃的条目数，`--hard` 且有改动时走**勾选式危险确认**；游离 HEAD 有专门说明。② 检出分支/提交新增**「自动 reset」**选项：脏工作区确认框与检出/游离检出对话框里**始终显示**该选项（干净时置灰并说明无需 reset），勾选后先 `git reset --hard HEAD` 再检出（未跟踪文件不动）。③ **merge**：`mergeState` 按 `MERGE_HEAD` 检测（不依赖 git 的本地化冲突文案），面板顶部出现**合并横幅**（合并目标 + 冲突文件列表），可**继续合并**（对话框预填 git 准备的 MERGE_MSG，可编辑后提交；仍有未解决冲突时按钮禁用并提示）或**中止合并**（危险确认后 `git merge --abort`）；另加提交行「合并此提交到当前分支」与分支树「合并到当前分支」发起合并（冲突不算错误，停下等你处理）。单测：`merge-reset` 10/10（真实仓库真跑 reset/merge/冲突/中止/autoReset，夹具避开 `git init -b` 以便旧 git 也能跑）+ `merge-reset-routes` 6/6 + `client-load` 5 条 DOM 级用例。
 - **v0.10.2**：**修复「管理 TAG → 删除选中」点了没反应、不弹窗** —— `showConfirm()` 里用 `box.insertBefore(extra, btns)` 插入「同时删除远程 TAG」附加控件，而那一刻 `btns` 还没挂到 `box` 上，真实 DOM 会抛 **`NotFoundError`**，异常又从按钮的 click 处理器冒出去 → 静默无反应（假 DOM 当时不校验参照节点，所以测试没拦住）。改用 `appendChild`（DOM 顺序仍是「勾选项 → 附加控件 → 按钮」）；同时把管理面板删除按钮的调用包进 try/catch，任何打开确认框的异常都会显示在面板内，不再静默；测试用的假 DOM 改为**严格校验 `insertBefore` 参照节点**并支持 `innerHTML=''` 清空，新增 DOM 级用例跑**真实删除流程**（断言确认框真的出现、宽版、4 个复选框、未勾满三重确认时按钮禁用、可选勾选项不能替代三重确认、确认后回调执行且带出「同时删除远程 TAG」状态）—— 把该 bug 改回去该用例立即失败（已实测）。
 - **v0.10.1**：**「同时删除远程 TAG」选项显性化** —— 该选项原先只在「仓库配了远程」时才渲染、且远程下拉要勾选后才出现，容易被误以为功能缺失。现确认框里**始终显示**「同时删除远程 TAG」复选框 + 远程选择（未勾选时下拉置灰、文案说明「不勾选：只删本地 TAG，远程不受影响」；没有远程时置灰并提示「未配置远程仓库」），确认框改为宽版并可滚动；控件抽成模块级 `tagDeleteExtraControls` 并新增 **DOM 级单测**（用极简假 DOM 驱动：断言选项存在、远程清单与默认远程、勾选/取消的联动与状态写回），防止再退化。
 - **v0.10.0**：**TAG 功能** —— 提交右键新增「在此创建 TAG」与「管理 TAG…」：① 创建对话框填名称，可选**带注释（-a）**（必填消息）、**带 GPG 签名（-s，隐含注释）**，并可勾选**同时推送到远程**（选择远程，创建成功后立即推送；推送失败会明确提示「TAG 已创建，但推送失败」）；② 管理对话框选一个 TAG 做**推送**/**删除**，可**拉取远程 TAG**（单远程或全部远程），并标出每个 TAG「远程已有 / 未推送」；③ **删除是危险操作**：三重勾选确认后才可执行，并可勾选**同时删除对应远程 TAG**（多远程时指定远程）。host 侧新增 `tagCreate / tagDelete / tagDeleteRemote / tagsFetch / tagsRemote`，`tags()` 带上 `annotated/target/date`。**修复**「显示标签」开关看不出状态：原按钮是 emoji 图标（不继承 `color`）+ `--dsw-alias-brand-primary`（默认主题里是中性前景色，等于没高亮）→ 改为 `ToggleIconButton`：开/关两枚不同图标（标签 / 斜杠标签）+ 主题色按下态（`--sgg-ref-*`）+ `aria-pressed` + title 标注「开/关」；「显示整个仓库」开关同样处理。
