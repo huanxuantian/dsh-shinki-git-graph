@@ -29,7 +29,11 @@ function commit(msg, opts = {}) {
 }
 
 before(() => {
-  dir = mkdtempSync(path.join(tmpdir(), 'shinki-git-'));
+  // ⚠ realpath：macOS 的 tmpdir() 是 /var/...，而 `git rev-parse --show-toplevel`
+  // 返回的是 realpath（/private/var/...）。生产路径两侧都取自 realpath
+  // （resolveSessionCwd → existingDir 会 realpathSync），测试若直接用未处理的
+  // tmpdir，subdirOf 会算出 ../../.. 之类的垃圾相对路径而误报失败。
+  dir = realpathSync(mkdtempSync(path.join(tmpdir(), 'shinki-git-')));
   git(['init', '-b', 'main']);
   git(['config', 'user.email', 't@example.com']);
   git(['config', 'user.name', 'Tester']);
@@ -245,9 +249,17 @@ test('subdirOf：相对路径计算与边界', () => {
   assert.equal(subdirOf('C:/repo', 'C:/repo'), '');
   assert.equal(subdirOf('C:/repo', 'C:/repo/sub1'), 'sub1');
   assert.equal(subdirOf('C:/repo', 'C:/repo/a/b'), 'a/b');
-  // 不同驱动器 / cwd 不在 root 下 → 空（无法形成相对路径）
-  assert.equal(subdirOf('C:/repo', 'D:/other'), '');
   assert.equal(subdirOf('', 'C:/repo'), '');
+  // "不同驱动器"只在 Windows 上才会被判成绝对路径；POSIX 下 'C:/repo' 与 'D:/other'
+  // 都只是普通相对名，二者之间确实存在相对路径。用平台自适应的边界用例，
+  // 避免把 Windows 语义的断言在 macOS/Linux 上跑成假失败。
+  if (process.platform === 'win32') {
+    assert.equal(subdirOf('C:/repo', 'D:/other'), '');
+  } else {
+    assert.equal(subdirOf('/repo', '/other'), '', 'root 之外的绝对路径必须返回空');
+    assert.equal(subdirOf('/repo', '/repo/sub1'), 'sub1');
+    assert.equal(subdirOf('/repo', '/repo/a/b'), 'a/b');
+  }
 });
 
 test('init：子目录工作区返回 subdir（相对仓库根）', async () => {
@@ -705,7 +717,7 @@ function initRepoAt(repoDir) {
 }
 
 test('scanSubRepos：探测子目录仓库（含第 2 层与跳过规则）', async () => {
-  const ws = mkdtempSync(path.join(tmpdir(), 'shinki-ws-'));
+  const ws = realpathSync(mkdtempSync(path.join(tmpdir(), 'shinki-ws-')));
   try {
     initRepoAt(path.join(ws, 'sub1'));        // 第 1 层
     initRepoAt(path.join(ws, 'sub2/a'));      // 第 2 层
@@ -727,7 +739,7 @@ test('scanSubRepos：探测子目录仓库（含第 2 层与跳过规则）', as
 });
 
 test('scanSubRepos：深度限制（默认 3 层，第 4 层需显式 depth）', async () => {
-  const ws = mkdtempSync(path.join(tmpdir(), 'shinki-ws-depth-'));
+  const ws = realpathSync(mkdtempSync(path.join(tmpdir(), 'shinki-ws-depth-')));
   try {
     initRepoAt(path.join(ws, 'a/b/c'));       // 第 3 层
     initRepoAt(path.join(ws, 'a/b/c/d'));     // 第 4 层
@@ -742,7 +754,7 @@ test('scanSubRepos：深度限制（默认 3 层，第 4 层需显式 depth）',
 });
 
 test('scanSubRepos：嵌套仓库分别列出；空工作区返回空数组', async () => {
-  const ws = mkdtempSync(path.join(tmpdir(), 'shinki-ws-nest-'));
+  const ws = realpathSync(mkdtempSync(path.join(tmpdir(), 'shinki-ws-nest-')));
   try {
     initRepoAt(path.join(ws, 'outer'));
     initRepoAt(path.join(ws, 'outer/inner')); // outer 内再嵌一个仓库
@@ -750,7 +762,7 @@ test('scanSubRepos：嵌套仓库分别列出；空工作区返回空数组', as
     const paths = subs.map((s) => s.path).sort();
     assert.deepEqual(paths, ['outer', 'outer/inner']);
     // 空工作区（无任何仓库）→ []
-    const empty = mkdtempSync(path.join(tmpdir(), 'shinki-ws-empty-'));
+    const empty = realpathSync(mkdtempSync(path.join(tmpdir(), 'shinki-ws-empty-')));
     try {
       const none = await service.scanSubRepos(empty);
       assert.deepEqual(none, []);
