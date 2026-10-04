@@ -196,3 +196,10 @@ node --test tests/fence.test.mjs
 - VS Code Git 扩展的 askpass：`extensions/git/src/askpass.ts`（环境注入 `GIT_ASKPASS`/`VSCODE_GIT_ASKPASS_*`、无 IPC 时用 `askpassEmpty`、按 authority 缓存 60s、密码用掩码输入框）与 `extensions/git/src/askpass-main.ts`（助手经 IPC 取答案、写管道文件、失败 `fatal()` 退出 1）
 - git 官方：`gitcredentials(7)`（取凭据顺序 `GIT_ASKPASS` → `core.askPass` → `SSH_ASKPASS` → **终端提示**）、`git-credential(1)`（`fill`/`approve`/`reject` 协议）
 - 已知坑：microsoft/vscode#230033（askpass 并发/交错的用户名+密码请求）
+
+## 相关路线图（依赖提示）
+
+本插件与第三方 `dsh-better-sidebar` 有**服务依赖**（激活时 `inject` 该服务，缺失会 `pending`）。
+社区计划由 **`dsh-shinki-sidebar-tools`** 逐步**接替 `dsh-better-sidebar` 的部分能力**
+（背景：第三方版本兼容风险 + 官方右侧边栏视图可达性缺口；目标：禁用它后视图仍可用）。
+完整计划与分步判定标准见 `../dsh-shinki-sidebar-tools/README.md` 的「路线图」小节。
