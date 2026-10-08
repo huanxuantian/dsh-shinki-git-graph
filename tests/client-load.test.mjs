@@ -98,34 +98,40 @@ test('client bundle：可加载并导出 name/inject/apply', () => {
   assert.ok(exports, 'bundle 未调用 __ModuleLoader__.load');
   assert.equal(exports.__id, 'dsh-shinki-git-graph');
   assert.equal(exports.name, 'dsh-shinki-git-graph');
-  assert.deepEqual([...exports.inject].sort(), ['betterSidebar', 'locale']);
+  assert.deepEqual([...exports.inject].sort(), ['locale']);   // 入口只走适配层，不再依赖第三方
   assert.equal(typeof exports.apply, 'function');
   assert.equal(typeof exports.__internals.GraphRow, 'function');
 });
 
-test('client bundle：apply() 注册侧边栏 Tab（含设置项），无 betterSidebar 时安全退出', () => {
+test('client bundle：apply() 经视图中间件注册（含设置项），且不再直连 better-sidebar', () => {
   const { exports } = loadBundle();
   const registered = [];
   const locales = [];
   const effects = [];
+  let betterCalls = 0;
   const ctx = {
     locale: { register: (ns, dict) => locales.push([ns, dict]) },
-    betterSidebar: {
-      registerTab: (desc) => { registered.push(desc); return () => {}; },
+    get: (n) => {
+      if (n === 'shinkiViews') return { register: (sp) => { registered.push(sp); return () => {}; } };
+      if (n === 'betterSidebar') return { registerTab: () => { betterCalls += 1; return () => {}; }, updateTab() {} };
+      return undefined;
     },
     effect: (fn, label) => { effects.push(label); fn(); return () => {}; },
   };
   assert.doesNotThrow(() => exports.apply(ctx));
-  assert.equal(registered.length, 1);
-  assert.equal(registered[0].id, 'dsh-shinki-git-graph');
-  assert.equal(registered[0].order, 25);
-  assert.equal(typeof registered[0].component, 'function');
-  assert.deepEqual(registered[0].settings.pluginToggles.map((x) => x.key), ['scope', 'pageSize', 'showTags']);
-  assert.equal(registered[0].title(), 'Git 图谱');
+  assert.equal(registered.length, 1, '应恰好经适配层注册一个视图');
+  const spec = registered[0];
+  assert.equal(spec.id, 'dsh-shinki-git-graph');
+  assert.equal(spec.order, 25);
+  assert.equal(typeof spec.render, 'function');
+  assert.deepEqual([...spec.targets].sort(), ['bottom', 'right']);
+  assert.equal(spec.background, 'pause');
+  assert.deepEqual(spec.settings.pluginToggles.map((x) => x.key), ['scope', 'pageSize', 'showTags']);
+  assert.equal(spec.title, 'Git 图谱');
   assert.equal(locales[0][0], 'shinkiGitGraph');
   assert.ok(locales[0][1].zh.tabTitle && locales[0][1].en.tabTitle);
-  assert.ok(effects.some((l) => String(l).includes('sidebar tab')));
-  // 没有 betterSidebar 服务时只警告、不抛
+  assert.equal(betterCalls, 0, '老模式兜底已移除：现场即便有 better-sidebar 也不得直连');
+  // 连视图中间件都没有时也只是降级：不抛错
   assert.doesNotThrow(() => exports.apply({ locale: { register() {} }, effect: (fn) => fn() }));
 });
 

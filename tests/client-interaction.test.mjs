@@ -205,13 +205,21 @@ async function mountTab() {
   const { exports, mini } = loadBundle({ document: dom.document, fetchImpl: makeFetch(ROWS, calls), calls });
   let tree = null;
   const registered = [];
+  let betterCalls = 0;
   const ctx = {
     locale: { register() {} },
-    betterSidebar: { registerTab: (d) => { registered.push(d); return () => {}; }, updateTab() {} },
+    get: (n) => {
+      if (n === 'shinkiViews') return { register: (sp) => { registered.push(sp); return () => {}; } };
+      if (n === 'betterSidebar') return { registerTab: () => { betterCalls += 1; return () => {}; }, updateTab() {} };
+      return undefined;
+    },
     effect: (fn) => { fn(); return () => {}; },
   };
   exports.apply(ctx);
-  const tab = registered[0];
+  if (registered.length !== 1) throw new Error('应恰好经适配层注册 1 个视图，实际 ' + registered.length);
+  if (betterCalls !== 0) throw new Error('不应再直连 better-sidebar');
+  const spec = registered[0];
+  const tab = { id: spec.id, component: spec.render, settings: spec.settings, targets: spec.targets };
   const tabProps = { ctx, scope: { sessionId: 's1', cwd: '/r' }, visible: true, store: null };
   const flush = async (ticks = 6) => {
     for (let i = 0; i < ticks; i += 1) {
