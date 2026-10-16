@@ -42,6 +42,37 @@ DSH 侧边栏 **Git 图谱**插件：在侧边栏增加一个 Git 历史/分支�
 
 ## 安装
 
+### 在官方 DSH 桌面端安装（推荐路径，已在 Windows 实测）
+
+**先确定该客户端启动的是哪个 profile —— 不要用 agent shell 里的 `DSH_HOME` / `DSH_PROFILE_DIR` 判断。**
+官方 DSH 桌面端的启动代码写死了它用的 profile（`@deepseek-ai/dsh-desktop-host/lib/index.js` 的 `main()`）：
+
+```js
+const profile = loadProfileDirectory("dsh", projectDir, installAnchor);
+const application = runProfile({ profile: "desktop", args: ["--no-open", "--port", "19387"] });
+```
+
+即目标是 `~/.dsh/profiles/desktop`（`%USERPROFILE%\.dsh\profiles\desktop`）。机器上若还留着旧的可移植
+（EAC）实例，它用的是另外的 profile（如 `web-desktop`），装到那里对官方客户端完全无效。
+
+```powershell
+# 用客户端自带的 dsh 命令安装。包名会被自动写进该 profile 的 dsh.profile.bundles
+& 'E:\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd' plugin --profile desktop add `
+  file:E:\path\to\dsh-shinki-git-graph
+```
+
+要点：
+
+- **登记机制**：`dsh plugin add` 把包名追加到 profile 的 `package.json` → `dsh.profile.bundles`，
+  插件自带的 `cordis.patch.yml`（`dsh.bundle.patch`）作为 bundle 层生效。这**不同于**手工往
+  `cordis.patch.yml` 写 `insert` roster 行（设置页插件管理器用的是那种），只写 roster 不会被 Loader 挂载。
+- **生效**：官方客户端是**热挂载**的 —— 装完立刻在运行中的会话里出现，通常**不需要重启**；没有生效时再重启客户端。
+- **自检**：`dsh plugin --profile desktop list --depth 0` 应列出本插件；设置 → 插件页（`pluginInventory`）
+  应能搜到 `dsh-shinki-git-graph`。
+- **卸载**：`dsh plugin --profile desktop remove dsh-shinki-git-graph`。
+
+### 通用安装（npm / git / 本地 link）
+
 前置：宿主需已安装 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar)（提供 `ctx.betterSidebar` 侧边栏注册服务）；系统 `PATH` 上需有 `git`（插件按命令逐条 spawn，不走 shell）。
 
 ```sh
